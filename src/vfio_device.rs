@@ -1,10 +1,7 @@
 // Copyright © 2019 Intel Corporation
 //
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
-//
-use crate::vec_with_array_field;
-use byteorder::{ByteOrder, LittleEndian};
-use kvm_ioctls::*;
+
 use std::collections::HashMap;
 use std::ffi::CString;
 use std::fmt;
@@ -15,12 +12,19 @@ use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::prelude::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::u32;
+
+use byteorder::{ByteOrder, LittleEndian};
+//use kvm_bindings::{kvm_device_attr, KVM_DEV_VFIO_GROUP, KVM_DEV_VFIO_GROUP_ADD, KVM_DEV_VFIO_GROUP_DEL};
+use kvm_ioctls::DeviceFd;
+use log::{debug, error, warn};
 use vfio_bindings::bindings::vfio::*;
-use vfio_ioctls::*;
 use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+use vmm_sys_util::errno::Error as SysError;
 use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::ioctl::*;
+
+use crate::vec_with_array_field;
+use crate::vfio_ioctls::*;
 
 #[derive(Debug)]
 pub enum VfioError {
@@ -36,7 +40,7 @@ pub enum VfioError {
     UnsetContainer,
     ContainerSetIOMMU,
     GroupGetDeviceFD,
-    KvmSetDeviceAttr(io::Error),
+    KvmSetDeviceAttr(SysError),
     VfioDeviceGetInfo,
     VfioDeviceGetRegionInfo,
     InvalidPath,
@@ -266,7 +270,7 @@ impl VfioGroup {
             .map_err(VfioError::KvmSetDeviceAttr)
     }
 
-    fn kvm_device_del_group(&self) -> std::result::Result<(), io::Error> {
+    fn kvm_device_del_group(&self) -> Result<()> {
         let group_fd = self.as_raw_fd();
         let group_fd_ptr = &group_fd as *const i32;
         let dev_attr = kvm_bindings::kvm_device_attr {
@@ -276,7 +280,9 @@ impl VfioGroup {
             addr: group_fd_ptr as u64,
         };
 
-        self.device.set_device_attr(&dev_attr)
+        self.device
+            .set_device_attr(&dev_attr)
+            .map_err(VfioError::KvmSetDeviceAttr)
     }
 
     fn unset_container(&self) -> std::result::Result<(), io::Error> {
