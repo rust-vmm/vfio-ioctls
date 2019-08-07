@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use byteorder::{ByteOrder, LittleEndian};
-//use kvm_bindings::{kvm_device_attr, KVM_DEV_VFIO_GROUP, KVM_DEV_VFIO_GROUP_ADD, KVM_DEV_VFIO_GROUP_DEL};
+use kvm_bindings::{
+    kvm_device_attr, KVM_DEV_VFIO_GROUP, KVM_DEV_VFIO_GROUP_ADD, KVM_DEV_VFIO_GROUP_DEL,
+};
 use kvm_ioctls::DeviceFd;
 use log::{debug, error, warn};
 use vfio_bindings::bindings::vfio::*;
@@ -26,6 +28,7 @@ use vmm_sys_util::ioctl::*;
 use crate::vec_with_array_field;
 use crate::vfio_ioctls::*;
 
+#[allow(missing_docs)]
 #[derive(Debug)]
 pub enum VfioError {
     OpenContainer(io::Error),
@@ -107,12 +110,18 @@ struct vfio_region_info_with_cap {
     cap_info: __IncompleteArrayField<u8>,
 }
 
-struct VfioContainer {
+/// A wrapper over a VFIO container object.
+///
+/// A VFIO container represents an IOMMU domain, or a set of IO virtual address translation tables.
+/// A VFIO container may be associated with one or more VFIO groups, and it handles IOVA map/unmap
+/// operations.
+pub struct VfioContainer {
     container: File,
 }
 
 impl VfioContainer {
-    fn new() -> Result<Self> {
+    /// Create a container wrapper object.
+    pub fn new() -> Result<Self> {
         let container = OpenOptions::new()
             .read(true)
             .write(true)
@@ -122,9 +131,22 @@ impl VfioContainer {
         Ok(VfioContainer { container })
     }
 
-    fn get_api_version(&self) -> i32 {
+    /// Initialize the IOMMU backend with groups attached to the container.
+    pub fn initialize_iommu(&self) -> Result<()> {
+        self.check_api_version()?;
+        self.check_extension(VFIO_TYPE1v2_IOMMU)?;
+        self.set_iommu(VFIO_TYPE1v2_IOMMU)?;
+
+        Ok(())
+    }
+
+    fn check_api_version(&self) -> Result<()> {
         // Safe as file is vfio container fd and ioctl is defined by kernel.
-        unsafe { ioctl(self, VFIO_GET_API_VERSION()) }
+        let version = unsafe { ioctl(self, VFIO_GET_API_VERSION()) };
+        if version as u32 != VFIO_API_VERSION {
+            return Err(VfioError::VfioApiVersion);
+        }
+        Ok(())
     }
 
     fn check_extension(&self, val: u32) -> Result<()> {
@@ -155,7 +177,13 @@ impl VfioContainer {
         Ok(())
     }
 
-    fn vfio_dma_map(&self, iova: u64, size: u64, user_addr: u64) -> Result<()> {
+    /// Map a region of guest memory regions into the vfio container's iommu table.
+    ///
+    /// # Parameters
+    /// * iova: IO virtual address to mapping the memory.
+    /// * size: size of the memory region.
+    /// * user_addr: host virtual address for the guest memory region to map.
+    pub fn vfio_dma_map(&self, iova: u64, size: u64, user_addr: u64) -> Result<()> {
         let dma_map = vfio_iommu_type1_dma_map {
             argsz: mem::size_of::<vfio_iommu_type1_dma_map>() as u32,
             flags: VFIO_DMA_MAP_FLAG_READ | VFIO_DMA_MAP_FLAG_WRITE,
@@ -174,7 +202,12 @@ impl VfioContainer {
         Ok(())
     }
 
-    fn vfio_dma_unmap(&self, iova: u64, size: u64) -> Result<()> {
+    /// Unmap a region of guest memory regions into the vfio container's iommu table.
+    ///
+    /// # Parameters
+    /// * iova: IO virtual address to mapping the memory.
+    /// * size: size of the memory region.
+    pub fn vfio_dma_unmap(&self, iova: u64, size: u64) -> Result<()> {
         let mut dma_unmap = vfio_iommu_type1_dma_unmap {
             argsz: mem::size_of::<vfio_iommu_type1_dma_unmap>() as u32,
             flags: 0,
@@ -191,6 +224,35 @@ impl VfioContainer {
 
         Ok(())
     }
+
+    /// Add all guest memory regions into the vfio container's iommu table.
+    ///
+    /// # Parameters
+    /// * mem: pinned guest memory which could be accessed by devices binding to the container.
+    pub fn vfio_map_geust_memory(&self, mem: GuestMemoryMmap) -> Result<()> {
+        mem.with_regions(|_index, region| {
+            self.vfio_dma_map(
+                region.start_addr().raw_value(),
+                region.len() as u64,
+                region.as_ptr() as u64,
+            )
+        })?;
+        Ok(())
+    }
+
+    /// Remove all guest memory regions from the vfio container's iommu table.
+    ///
+    /// The vfio kernel driver and device hardware couldn't access this guest memory after
+    /// returning from the function.
+    ///
+    /// # Parameters
+    /// * mem: pinned guest memory which could be accessed by devices binding to the container.
+    pub fn vfio_unmap_guest_memory(&self, mem: GuestMemoryMmap) -> Result<()> {
+        mem.with_regions(|_index, region| {
+            self.vfio_dma_unmap(region.start_addr().raw_value(), region.len() as u64)
+        })?;
+        Ok(())
+    }
 }
 
 impl AsRawFd for VfioContainer {
@@ -202,11 +264,11 @@ impl AsRawFd for VfioContainer {
 struct VfioGroup {
     group: File,
     device: Arc<DeviceFd>,
-    container: VfioContainer,
+    container: Arc<VfioContainer>,
 }
 
 impl VfioGroup {
-    fn new(id: u32, device: Arc<DeviceFd>) -> Result<Self> {
+    fn new(id: u32, device: Arc<DeviceFd>, container: Arc<VfioContainer>) -> Result<Self> {
         let group_path = Path::new("/dev/vfio").join(id.to_string());
         let group = OpenOptions::new()
             .read(true)
@@ -229,13 +291,6 @@ impl VfioGroup {
             return Err(VfioError::GroupViable);
         }
 
-        let container = VfioContainer::new()?;
-        if container.get_api_version() as u32 != VFIO_API_VERSION {
-            return Err(VfioError::VfioApiVersion);
-        }
-
-        container.check_extension(VFIO_TYPE1v2_IOMMU)?;
-
         // Safe as we are the owner of group and container_raw_fd which are valid value,
         // and we verify the ret value
         let container_raw_fd = container.as_raw_fd();
@@ -243,8 +298,6 @@ impl VfioGroup {
         if ret < 0 {
             return Err(VfioError::GroupSetContainer);
         }
-
-        container.set_iommu(VFIO_TYPE1v2_IOMMU)?;
 
         Self::kvm_device_add_group(&device, &group)?;
 
@@ -258,10 +311,10 @@ impl VfioGroup {
     fn kvm_device_add_group(device_fd: &Arc<DeviceFd>, group: &File) -> Result<()> {
         let group_fd = group.as_raw_fd();
         let group_fd_ptr = &group_fd as *const i32;
-        let dev_attr = kvm_bindings::kvm_device_attr {
+        let dev_attr = kvm_device_attr {
             flags: 0,
-            group: kvm_bindings::KVM_DEV_VFIO_GROUP,
-            attr: u64::from(kvm_bindings::KVM_DEV_VFIO_GROUP_ADD),
+            group: KVM_DEV_VFIO_GROUP,
+            attr: u64::from(KVM_DEV_VFIO_GROUP_ADD),
             addr: group_fd_ptr as u64,
         };
 
@@ -273,10 +326,10 @@ impl VfioGroup {
     fn kvm_device_del_group(&self) -> Result<()> {
         let group_fd = self.as_raw_fd();
         let group_fd_ptr = &group_fd as *const i32;
-        let dev_attr = kvm_bindings::kvm_device_attr {
+        let dev_attr = kvm_device_attr {
             flags: 0,
-            group: kvm_bindings::KVM_DEV_VFIO_GROUP,
-            attr: u64::from(kvm_bindings::KVM_DEV_VFIO_GROUP_DEL),
+            group: KVM_DEV_VFIO_GROUP,
+            attr: u64::from(KVM_DEV_VFIO_GROUP_DEL),
             addr: group_fd_ptr as u64,
         };
 
@@ -516,17 +569,23 @@ impl VfioDeviceInfo {
 pub struct VfioDevice {
     device: File,
     flags: u32,
-    group: VfioGroup,
     regions: Vec<VfioRegion>,
     irqs: HashMap<u32, VfioIrq>,
-    mem: GuestMemoryMmap,
+    #[allow(dead_code)]
+    group: VfioGroup, // Take owner of the group object, otherwise it will be dropped.
 }
 
 impl VfioDevice {
     /// Create a new vfio device, then guest read/write on this device could be
     /// transfered into kernel vfio.
     /// sysfspath specify the vfio device path in sys file system.
-    pub fn new(sysfspath: &Path, device_fd: Arc<DeviceFd>, mem: GuestMemoryMmap) -> Result<Self> {
+    pub fn new(
+        sysfspath: &Path,
+        device_fd: Arc<DeviceFd>,
+        container: Arc<VfioContainer>,
+    ) -> Result<Self> {
+        container.check_api_version()?;
+
         let uuid_path: PathBuf = [sysfspath, Path::new("iommu_group")].iter().collect();
         let group_path = uuid_path.read_link().map_err(|_| VfioError::InvalidPath)?;
         let group_osstr = group_path.file_name().ok_or(VfioError::InvalidPath)?;
@@ -535,7 +594,7 @@ impl VfioDevice {
             .parse::<u32>()
             .map_err(|_| VfioError::InvalidPath)?;
 
-        let group = VfioGroup::new(group_id, device_fd)?;
+        let group = VfioGroup::new(group_id, device_fd, container)?;
         let device_info = group.get_device(sysfspath)?;
         let regions = device_info.get_regions()?;
         let irqs = device_info.get_irqs()?;
@@ -546,12 +605,10 @@ impl VfioDevice {
             group,
             regions,
             irqs,
-            mem,
         })
     }
 
-    /// VFIO device reset.
-    /// Only if the device supports being reset.
+    /// VFIO device reset only if the device supports being reset.
     pub fn reset(&self) {
         if self.flags & VFIO_DEVICE_FLAGS_RESET != 0 {
             unsafe { ioctl(self, VFIO_DEVICE_RESET()) };
@@ -661,7 +718,10 @@ impl VfioDevice {
         self.disable_irq(VFIO_PCI_MSIX_IRQ_INDEX)
     }
 
-    /// get a region's flag
+    /// Get a region's flag.
+    ///
+    /// # Arguments
+    /// * `index` - The index of memory region.
     pub fn get_region_flags(&self, index: u32) -> u32 {
         match self.regions.get(index as usize) {
             Some(v) => v.flags,
@@ -669,7 +729,10 @@ impl VfioDevice {
         }
     }
 
-    /// get a region's offset
+    /// Get a region's offset.
+    ///
+    /// # Arguments
+    /// * `index` - The index of memory region.
     pub fn get_region_offset(&self, index: u32) -> u64 {
         match self.regions.get(index as usize) {
             Some(v) => v.offset,
@@ -677,7 +740,10 @@ impl VfioDevice {
         }
     }
 
-    /// get a region's mmap info
+    /// Get a region's mmap info.
+    ///
+    /// # Arguments
+    /// * `index` - The index of memory region.
     pub fn get_region_mmap(&self, index: u32) -> (u64, u64) {
         match self.regions.get(index as usize) {
             Some(v) => v.mmap,
@@ -688,7 +754,10 @@ impl VfioDevice {
         }
     }
 
-    /// get a region's size
+    /// Get a region's size.
+    ///
+    /// # Arguments
+    /// * `index` - The index of memory region.
     pub fn get_region_size(&self, index: u32) -> u64 {
         match self.regions.get(index as usize) {
             Some(v) => v.size,
@@ -762,36 +831,6 @@ impl VfioDevice {
                 index, addr, e
             );
         }
-    }
-
-    fn vfio_dma_map(&self, iova: u64, size: u64, user_addr: u64) -> Result<()> {
-        self.group.container.vfio_dma_map(iova, size, user_addr)
-    }
-
-    fn vfio_dma_unmap(&self, iova: u64, size: u64) -> Result<()> {
-        self.group.container.vfio_dma_unmap(iova, size)
-    }
-
-    /// Add all guest memory regions into vfio container's iommu table,
-    /// then vfio kernel driver could access guest memory from gfn
-    pub fn setup_dma_map(&self) -> Result<()> {
-        self.mem.with_regions(|_index, region| {
-            self.vfio_dma_map(
-                region.start_addr().raw_value(),
-                region.len() as u64,
-                region.as_ptr() as u64,
-            )
-        })?;
-        Ok(())
-    }
-
-    /// remove all guest memory regions from vfio containers iommu table
-    /// then vfio kernel driver couldn't access this guest memory
-    pub fn unset_dma_map(&self) -> Result<()> {
-        self.mem.with_regions(|_index, region| {
-            self.vfio_dma_unmap(region.start_addr().raw_value(), region.len() as u64)
-        })?;
-        Ok(())
     }
 
     /// Return the maximum numner of interrupts a VFIO device can request.
