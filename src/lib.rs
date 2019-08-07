@@ -11,7 +11,7 @@ extern crate vmm_sys_util;
 mod vfio_device;
 mod vfio_ioctls;
 
-pub use vfio_device::{VfioDevice, VfioError};
+pub use vfio_device::{VfioContainer, VfioDevice, VfioError};
 
 use std::mem::size_of;
 
