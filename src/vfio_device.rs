@@ -110,11 +110,16 @@ struct vfio_region_info_with_cap {
     cap_info: __IncompleteArrayField<u8>,
 }
 
-/// A wrapper over a VFIO container object.
+/// A safe wrapper over a VFIO container object.
 ///
 /// A VFIO container represents an IOMMU domain, or a set of IO virtual address translation tables.
-/// A VFIO container may be associated with one or more VFIO groups, and it handles IOVA map/unmap
-/// operations.
+/// On its own, the container provides little functionality, with all but a couple version and
+/// extension query interfaces locked away. The user needs to add a group into the container for
+/// the next level of functionality. After some groups are associated with a container, the user
+/// can query and set the IOMMU backend, and then build IOVA mapping to access memory.
+///
+/// Multiple VFIO groups may be associated with the same VFIO container to share the underline
+/// address translation mapping tables.
 pub struct VfioContainer {
     container: File,
 }
@@ -261,6 +266,12 @@ impl AsRawFd for VfioContainer {
     }
 }
 
+/// A safe wrapper over a VFIO container object.
+///
+/// The Linux VFIO frameworks supports multiple devices per group, and multiple groups per
+/// container. But current implementation assumes there's only one device per group to simplify
+/// implementation. With such an assumption, the `VfioGroup` becomes an internal implementation
+/// details.
 struct VfioGroup {
     group: File,
     device: Arc<DeviceFd>,
@@ -268,6 +279,11 @@ struct VfioGroup {
 }
 
 impl VfioGroup {
+    /// Create a new VfioGroup object.
+    ///
+    /// # Parameters
+    /// * `device`: file handle of the KVM VFIO device.
+    /// * `container`: the new group object will bind to this container object.
     fn new(id: u32, device: Arc<DeviceFd>, container: Arc<VfioContainer>) -> Result<Self> {
         let group_path = Path::new("/dev/vfio").join(id.to_string());
         let group = OpenOptions::new()
@@ -565,7 +581,11 @@ impl VfioDeviceInfo {
     }
 }
 
-/// Vfio device for exposing regions which could be read/write to kernel vfio device.
+/// Vfio device to access underline hardware devices.
+///
+/// The VFIO device API includes ioctls for describing the device, the I/O regions and their
+/// read/write/mmap offsets on the device descriptor, as well as mechanisms for describing and
+/// registering interrupt notifications.
 pub struct VfioDevice {
     device: File,
     flags: u32,
@@ -576,9 +596,12 @@ pub struct VfioDevice {
 }
 
 impl VfioDevice {
-    /// Create a new vfio device, then guest read/write on this device could be
-    /// transfered into kernel vfio.
-    /// sysfspath specify the vfio device path in sys file system.
+    /// Create a new vfio device, then guest read/write on this device could be transferred into kernel vfio.
+    ///
+    /// # Parameters
+    /// * `sysfspath`: specify the vfio device path in sys file system.
+    /// * `device_fd`: file handle of the KVM VFIO device.
+    /// * `container`: the new device object will bind to this container object.
     pub fn new(
         sysfspath: &Path,
         device_fd: Arc<DeviceFd>,
@@ -621,7 +644,6 @@ impl VfioDevice {
     /// is triggered.
     ///
     /// # Arguments
-    ///
     /// * `irq_index` - The type (INTX, MSI or MSI-X) of interrupts to enable.
     /// * `event_fds` - The EventFds vector that matches all the supported VFIO interrupts.
     pub fn enable_irq(&self, irq_index: u32, event_fds: Vec<&EventFd>) -> Result<()> {
@@ -671,7 +693,6 @@ impl VfioDevice {
     /// Disables a VFIO device IRQs
     ///
     /// # Arguments
-    ///
     /// * `irq_index` - The type (INTX, MSI or MSI-X) of interrupts to disable.
     pub fn disable_irq(&self, irq_index: u32) -> Result<()> {
         let irq = self
@@ -769,9 +790,11 @@ impl VfioDevice {
     }
 
     /// Read region's data from VFIO device into buf
-    /// index: region num
-    /// buf: data destination and buf length is read size
-    /// addr: offset in the region
+    ///
+    /// # Arguments
+    /// * `index`: region num
+    /// * `buf`: data destination and buf length is read size
+    /// * `addr`: offset in the region
     pub fn region_read(&self, index: u32, buf: &mut [u8], addr: u64) {
         let region: &VfioRegion;
         match self.regions.get(index as usize) {
@@ -799,10 +822,12 @@ impl VfioDevice {
         }
     }
 
-    /// write the data from buf into a vfio device region
-    /// index: region num
-    /// buf: data src and buf length is write size
-    /// addr: offset in the region
+    /// Write the data from buf into a vfio device region
+    ///
+    /// # Arguments
+    /// * `index`: region num
+    /// * `buf`: data src and buf length is write size
+    /// * `addr`: offset in the region
     pub fn region_write(&self, index: u32, buf: &[u8], addr: u64) {
         let stub: &VfioRegion;
         match self.regions.get(index as usize) {
@@ -834,7 +859,6 @@ impl VfioDevice {
     }
 
     /// Return the maximum numner of interrupts a VFIO device can request.
-    /// This is used for pre-allocating the VFIO PCI routes.
     pub fn max_interrupts(&self) -> u32 {
         let mut max_interrupts = 0;
         let irq_indexes = vec![
