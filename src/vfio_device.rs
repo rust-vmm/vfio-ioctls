@@ -1,4 +1,5 @@
 // Copyright © 2019 Intel Corporation
+// Copyright (C) 2019 Alibaba Cloud Computing. All rights reserved.
 //
 // SPDX-License-Identifier: Apache-2.0 OR BSD-3-Clause
 
@@ -11,7 +12,7 @@ use std::mem;
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::prelude::FileExt;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use byteorder::{ByteOrder, LittleEndian};
 use kvm_bindings::{
@@ -122,27 +123,31 @@ struct vfio_region_info_with_cap {
 /// address translation mapping tables.
 pub struct VfioContainer {
     container: File,
+    device_fd: Arc<DeviceFd>,
+    groups: Mutex<HashMap<u32, Arc<VfioGroup>>>,
 }
 
 impl VfioContainer {
     /// Create a container wrapper object.
-    pub fn new() -> Result<Self> {
+    ///
+    /// # Arguments
+    /// * `device_fd`: file handle of the KVM VFIO device.
+    pub fn new(device_fd: Arc<DeviceFd>) -> Result<Self> {
         let container = OpenOptions::new()
             .read(true)
             .write(true)
             .open("/dev/vfio/vfio")
             .map_err(VfioError::OpenContainer)?;
 
-        Ok(VfioContainer { container })
-    }
+        let container = VfioContainer {
+            container,
+            device_fd,
+            groups: Mutex::new(HashMap::new()),
+        };
+        container.check_api_version()?;
+        container.check_extension(VFIO_TYPE1v2_IOMMU)?;
 
-    /// Initialize the IOMMU backend with groups attached to the container.
-    pub fn initialize_iommu(&self) -> Result<()> {
-        self.check_api_version()?;
-        self.check_extension(VFIO_TYPE1v2_IOMMU)?;
-        self.set_iommu(VFIO_TYPE1v2_IOMMU)?;
-
-        Ok(())
+        Ok(container)
     }
 
     fn check_api_version(&self) -> Result<()> {
@@ -180,6 +185,102 @@ impl VfioContainer {
         }
 
         Ok(())
+    }
+
+    fn kvm_device_add_group(&self, group_fd: RawFd) -> Result<()> {
+        let group_fd_ptr = &group_fd as *const i32;
+        let dev_attr = kvm_device_attr {
+            flags: 0,
+            group: KVM_DEV_VFIO_GROUP,
+            attr: u64::from(KVM_DEV_VFIO_GROUP_ADD),
+            addr: group_fd_ptr as u64,
+        };
+
+        self.device_fd
+            .set_device_attr(&dev_attr)
+            .map_err(VfioError::KvmSetDeviceAttr)
+    }
+
+    fn kvm_device_del_group(&self, group_fd: RawFd) -> Result<()> {
+        let group_fd_ptr = &group_fd as *const i32;
+        let dev_attr = kvm_device_attr {
+            flags: 0,
+            group: KVM_DEV_VFIO_GROUP,
+            attr: u64::from(KVM_DEV_VFIO_GROUP_DEL),
+            addr: group_fd_ptr as u64,
+        };
+
+        self.device_fd
+            .set_device_attr(&dev_attr)
+            .map_err(VfioError::KvmSetDeviceAttr)
+    }
+
+    fn get_group(&self, group_id: u32) -> Result<Arc<VfioGroup>> {
+        // Safe because there's no legal way to break the lock.
+        let mut hash = self.groups.lock().unwrap();
+        if let Some(entry) = hash.get(&group_id) {
+            return Ok(entry.clone());
+        }
+
+        let group = Arc::new(VfioGroup::new(group_id)?);
+
+        // Bind the new group object to the container.
+        // Safe as we are the owner of group and container_raw_fd which are valid value,
+        // and we verify the ret value
+        let container_raw_fd = self.as_raw_fd();
+        let ret = unsafe { ioctl_with_ref(&*group, VFIO_GROUP_SET_CONTAINER(), &container_raw_fd) };
+        if ret < 0 {
+            return Err(VfioError::GroupSetContainer);
+        }
+
+        // Initialize the IOMMU backend driver after binding the first group object.
+        if hash.len() == 0 {
+            if let Err(e) = self.set_iommu(VFIO_TYPE1v2_IOMMU) {
+                let _ = unsafe {
+                    ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd())
+                };
+                return Err(e);
+            }
+        }
+
+        // Add the new group object to the KVM driver.
+        if let Err(e) = self.kvm_device_add_group(group.as_raw_fd()) {
+            let _ =
+                unsafe { ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd()) };
+            return Err(e);
+        }
+
+        hash.insert(group_id, group.clone());
+
+        Ok(group)
+    }
+
+    fn put_group(&self, group: Arc<VfioGroup>) {
+        // Safe because there's no legal way to break the lock.
+        let mut hash = self.groups.lock().unwrap();
+
+        // Clean up the group when the last user releases reference to the group, three reference
+        // count for:
+        // - one reference held by the last device object
+        // - one reference cloned in VfioDevice.drop() and passed into here
+        // - one reference held by the groups hashmap
+        if Arc::strong_count(&group) == 3 {
+            match self.kvm_device_del_group(group.as_raw_fd()) {
+                Ok(_) => {}
+                Err(e) => {
+                    error!("Could not delete VFIO group: {:?}", e);
+                    return;
+                }
+            }
+            // Safe as we are the owner of self and container_raw_fd which are valid value.
+            let ret =
+                unsafe { ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd()) };
+            if ret < 0 {
+                error!("Could not unbind VFIO group: {:?}", group.id());
+                return;
+            }
+            hash.remove(&group.id());
+        }
     }
 
     /// Map a region of guest memory regions into the vfio container's iommu table.
@@ -273,18 +374,16 @@ impl AsRawFd for VfioContainer {
 /// implementation. With such an assumption, the `VfioGroup` becomes an internal implementation
 /// details.
 struct VfioGroup {
+    id: u32,
     group: File,
-    device: Arc<DeviceFd>,
-    container: Arc<VfioContainer>,
 }
 
 impl VfioGroup {
     /// Create a new VfioGroup object.
     ///
     /// # Parameters
-    /// * `device`: file handle of the KVM VFIO device.
-    /// * `container`: the new group object will bind to this container object.
-    fn new(id: u32, device: Arc<DeviceFd>, container: Arc<VfioContainer>) -> Result<Self> {
+    /// * `id`: ID(index) of the VFIO group file.
+    fn new(id: u32) -> Result<Self> {
         let group_path = Path::new("/dev/vfio").join(id.to_string());
         let group = OpenOptions::new()
             .read(true)
@@ -297,8 +396,7 @@ impl VfioGroup {
             flags: 0,
         };
         // Safe as we are the owner of group and group_status which are valid value.
-        let mut ret =
-            unsafe { ioctl_with_mut_ref(&group, VFIO_GROUP_GET_STATUS(), &mut group_status) };
+        let ret = unsafe { ioctl_with_mut_ref(&group, VFIO_GROUP_GET_STATUS(), &mut group_status) };
         if ret < 0 {
             return Err(VfioError::GetGroupStatus);
         }
@@ -307,63 +405,11 @@ impl VfioGroup {
             return Err(VfioError::GroupViable);
         }
 
-        // Safe as we are the owner of group and container_raw_fd which are valid value,
-        // and we verify the ret value
-        let container_raw_fd = container.as_raw_fd();
-        ret = unsafe { ioctl_with_ref(&group, VFIO_GROUP_SET_CONTAINER(), &container_raw_fd) };
-        if ret < 0 {
-            return Err(VfioError::GroupSetContainer);
-        }
-
-        Self::kvm_device_add_group(&device, &group)?;
-
-        Ok(VfioGroup {
-            group,
-            device,
-            container,
-        })
+        Ok(VfioGroup { id, group })
     }
 
-    fn kvm_device_add_group(device_fd: &Arc<DeviceFd>, group: &File) -> Result<()> {
-        let group_fd = group.as_raw_fd();
-        let group_fd_ptr = &group_fd as *const i32;
-        let dev_attr = kvm_device_attr {
-            flags: 0,
-            group: KVM_DEV_VFIO_GROUP,
-            attr: u64::from(KVM_DEV_VFIO_GROUP_ADD),
-            addr: group_fd_ptr as u64,
-        };
-
-        device_fd
-            .set_device_attr(&dev_attr)
-            .map_err(VfioError::KvmSetDeviceAttr)
-    }
-
-    fn kvm_device_del_group(&self) -> Result<()> {
-        let group_fd = self.as_raw_fd();
-        let group_fd_ptr = &group_fd as *const i32;
-        let dev_attr = kvm_device_attr {
-            flags: 0,
-            group: KVM_DEV_VFIO_GROUP,
-            attr: u64::from(KVM_DEV_VFIO_GROUP_DEL),
-            addr: group_fd_ptr as u64,
-        };
-
-        self.device
-            .set_device_attr(&dev_attr)
-            .map_err(VfioError::KvmSetDeviceAttr)
-    }
-
-    fn unset_container(&self) -> std::result::Result<(), io::Error> {
-        let container_raw_fd = self.container.as_raw_fd();
-
-        // Safe as we are the owner of self and container_raw_fd which are valid value.
-        let ret = unsafe { ioctl_with_ref(self, VFIO_GROUP_UNSET_CONTAINER(), &container_raw_fd) };
-        if ret < 0 {
-            return Err(io::Error::last_os_error());
-        }
-
-        Ok(())
+    fn id(&self) -> u32 {
+        self.id
     }
 
     fn get_device(&self, name: &Path) -> Result<VfioDeviceInfo> {
@@ -410,24 +456,6 @@ impl VfioGroup {
 impl AsRawFd for VfioGroup {
     fn as_raw_fd(&self) -> RawFd {
         self.group.as_raw_fd()
-    }
-}
-
-impl Drop for VfioGroup {
-    fn drop(&mut self) {
-        match self.kvm_device_del_group() {
-            Ok(_) => {}
-            Err(e) => {
-                error!("Could not delete VFIO group: {:?}", e);
-            }
-        }
-
-        match self.unset_container() {
-            Ok(_) => {}
-            Err(e) => {
-                error!("Could not unset container: {:?}", e);
-            }
-        }
     }
 }
 
@@ -591,8 +619,8 @@ pub struct VfioDevice {
     flags: u32,
     regions: Vec<VfioRegion>,
     irqs: HashMap<u32, VfioIrq>,
-    #[allow(dead_code)]
-    group: VfioGroup, // Take owner of the group object, otherwise it will be dropped.
+    group: Arc<VfioGroup>,
+    container: Arc<VfioContainer>,
 }
 
 impl VfioDevice {
@@ -600,15 +628,8 @@ impl VfioDevice {
     ///
     /// # Parameters
     /// * `sysfspath`: specify the vfio device path in sys file system.
-    /// * `device_fd`: file handle of the KVM VFIO device.
-    /// * `container`: the new device object will bind to this container object.
-    pub fn new(
-        sysfspath: &Path,
-        device_fd: Arc<DeviceFd>,
-        container: Arc<VfioContainer>,
-    ) -> Result<Self> {
-        container.check_api_version()?;
-
+    /// * `container`: the new VFIO device object will bind to this container object.
+    pub fn new(sysfspath: &Path, container: Arc<VfioContainer>) -> Result<Self> {
         let uuid_path: PathBuf = [sysfspath, Path::new("iommu_group")].iter().collect();
         let group_path = uuid_path.read_link().map_err(|_| VfioError::InvalidPath)?;
         let group_osstr = group_path.file_name().ok_or(VfioError::InvalidPath)?;
@@ -617,7 +638,7 @@ impl VfioDevice {
             .parse::<u32>()
             .map_err(|_| VfioError::InvalidPath)?;
 
-        let group = VfioGroup::new(group_id, device_fd, container)?;
+        let group = container.get_group(group_id)?;
         let device_info = group.get_device(sysfspath)?;
         let regions = device_info.get_regions()?;
         let irqs = device_info.get_irqs()?;
@@ -625,9 +646,10 @@ impl VfioDevice {
         Ok(VfioDevice {
             device: device_info.device,
             flags: device_info.flags,
-            group,
             regions,
             irqs,
+            group,
+            container,
         })
     }
 
@@ -882,5 +904,11 @@ impl VfioDevice {
 impl AsRawFd for VfioDevice {
     fn as_raw_fd(&self) -> RawFd {
         self.device.as_raw_fd()
+    }
+}
+
+impl Drop for VfioDevice {
+    fn drop(&mut self) {
+        self.container.put_group(self.group.clone());
     }
 }
