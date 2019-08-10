@@ -466,10 +466,14 @@ struct VfioRegion {
     mmap: (u64, u64),
 }
 
-struct VfioIrq {
-    flags: u32,
-    index: u32,
-    count: u32,
+/// Information abour VFIO interrupts.
+pub struct VfioIrq {
+    /// Flags for irq.
+    pub flags: u32,
+    /// Staring index.
+    pub index: u32,
+    /// Number interrupts.
+    pub count: u32,
 }
 
 struct VfioDeviceInfo {
@@ -658,6 +662,14 @@ impl VfioDevice {
         if self.flags & VFIO_DEVICE_FLAGS_RESET != 0 {
             unsafe { ioctl(self, VFIO_DEVICE_RESET()) };
         }
+    }
+
+    /// Get information about VFIO IRQs.
+    ///
+    /// # Arguments
+    /// * `irq_index` - The type (INTX, MSI or MSI-X) of interrupts to enable.
+    pub fn get_irq_info(&self, irq_index: u32) -> Option<&VfioIrq> {
+        self.irqs.get(&irq_index)
     }
 
     /// Enables a VFIO device IRQs.
