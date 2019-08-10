@@ -672,6 +672,42 @@ impl VfioDevice {
         self.irqs.get(&irq_index)
     }
 
+    /// Trigger a VFIO device IRQ from userspace.
+    ///
+    /// Once a signaling mechanism is set, DATA_BOOL or DATA_NONE can be used with ACTION_TRIGGER
+    /// to perform kernel level interrupt loopback testing from userspace (ie. simulate hardware
+    /// triggering).
+    ///
+    /// # Arguments
+    /// * `irq_index` - The type (INTX, MSI or MSI-X) of interrupts to enable.
+    /// * `vector` - The sub-index into the interrupt group of `irq_index`.
+    pub fn trigger_irq(&self, irq_index: u32, vector: u32) -> Result<()> {
+        let irq = self
+            .irqs
+            .get(&irq_index)
+            .ok_or(VfioError::VfioDeviceSetIrq)?;
+        if irq.count < vector {
+            return Err(VfioError::VfioDeviceSetIrq);
+        }
+
+        let irq_set = vfio_irq_set {
+            argsz: mem::size_of::<vfio_irq_set>() as u32,
+            flags: VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_TRIGGER,
+            index: irq_index,
+            start: vector,
+            count: 1,
+            ..Default::default()
+        };
+
+        // Safe as we are the owner of self and irq_set which are valid value
+        let ret = unsafe { ioctl_with_ref(self, VFIO_DEVICE_SET_IRQS(), &irq_set) };
+        if ret < 0 {
+            return Err(VfioError::VfioDeviceSetIrq);
+        }
+
+        Ok(())
+    }
+
     /// Enables a VFIO device IRQs.
     /// This maps a vector of EventFds to all VFIO managed interrupts. In other words, this
     /// tells VFIO which EventFd to write into whenever one of the device interrupt vector
