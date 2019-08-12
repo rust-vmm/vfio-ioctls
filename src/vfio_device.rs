@@ -8,7 +8,7 @@ use std::ffi::CString;
 use std::fmt;
 use std::fs::{File, OpenOptions};
 use std::io;
-use std::mem;
+use std::mem::{self, ManuallyDrop};
 use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
 use std::os::unix::prelude::FileExt;
 use std::path::{Path, PathBuf};
@@ -619,7 +619,7 @@ impl VfioDeviceInfo {
 /// read/write/mmap offsets on the device descriptor, as well as mechanisms for describing and
 /// registering interrupt notifications.
 pub struct VfioDevice {
-    device: File,
+    device: ManuallyDrop<File>,
     flags: u32,
     regions: Vec<VfioRegion>,
     irqs: HashMap<u32, VfioIrq>,
@@ -648,7 +648,7 @@ impl VfioDevice {
         let irqs = device_info.get_irqs()?;
 
         Ok(VfioDevice {
-            device: device_info.device,
+            device: ManuallyDrop::new(device_info.device),
             flags: device_info.flags,
             regions,
             irqs,
@@ -957,6 +957,9 @@ impl AsRawFd for VfioDevice {
 
 impl Drop for VfioDevice {
     fn drop(&mut self) {
+        unsafe {
+            ManuallyDrop::drop(&mut self.device);
+        }
         self.container.put_group(self.group.clone());
     }
 }
