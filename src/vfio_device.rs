@@ -26,7 +26,7 @@ use vmm_sys_util::errno::Error as SysError;
 use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::ioctl::*;
 
-use crate::vec_with_array_field;
+use crate::fam::vec_with_array_field;
 use crate::vfio_ioctls::*;
 
 #[allow(missing_docs)]
