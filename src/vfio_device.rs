@@ -335,7 +335,7 @@ impl VfioContainer {
     ///
     /// # Parameters
     /// * mem: pinned guest memory which could be accessed by devices binding to the container.
-    pub fn vfio_map_geust_memory(&self, mem: GuestMemoryMmap) -> Result<()> {
+    pub fn vfio_map_guest_memory(&self, mem: GuestMemoryMmap) -> Result<()> {
         mem.with_regions(|_index, region| {
             self.vfio_dma_map(
                 region.start_addr().raw_value(),
