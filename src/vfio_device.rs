@@ -46,7 +46,7 @@ pub enum VfioError {
     GroupGetDeviceFD,
     KvmSetDeviceAttr(SysError),
     VfioDeviceGetInfo,
-    VfioDeviceGetRegionInfo,
+    VfioDeviceGetRegionInfo(SysError),
     InvalidPath,
     IommuDmaMap,
     IommuDmaUnmap,
@@ -90,8 +90,8 @@ impl fmt::Display for VfioError {
             VfioError::VfioDeviceGetInfo => {
                 write!(f, "failed to get vfio device's info or info doesn't match")
             }
-            VfioError::VfioDeviceGetRegionInfo => {
-                write!(f, "failed to get vfio device's region info")
+            VfioError::VfioDeviceGetRegionInfo(e) => {
+                write!(f, "failed to get vfio device's region info: {}", e)
             }
             VfioError::InvalidPath => write!(f, "invalid file path"),
             VfioError::IommuDmaMap => write!(f, "failed to add guest memory map into iommu table"),
@@ -530,6 +530,71 @@ impl VfioDeviceInfo {
         Ok(irqs)
     }
 
+    fn get_region_map(
+        &self,
+        region: &mut VfioRegion,
+        region_info: &vfio_region_info,
+    ) -> Result<()> {
+        let region_info_size: u32 = mem::size_of::<vfio_region_info>() as u32;
+
+        if region_info.flags & VFIO_REGION_INFO_FLAG_CAPS == 0
+            || region_info.argsz <= region_info_size
+        {
+            // There is not capabilities information for that region, we can
+            // just return.
+            return Ok(());
+        }
+
+        // There is a capability information for that region, we have to call
+        // VFIO_DEVICE_GET_REGION_INFO with a vfio_region_with_cap structure
+        // and the hinted size.
+        let cap_len: usize = (region_info.argsz - region_info_size) as usize;
+        let mut region_with_cap = vec_with_array_field::<vfio_region_info_with_cap, u8>(cap_len);
+        region_with_cap[0].region_info.argsz = region_info.argsz;
+        region_with_cap[0].region_info.flags = 0;
+        region_with_cap[0].region_info.index = region_info.index;
+        region_with_cap[0].region_info.cap_offset = 0;
+        region_with_cap[0].region_info.size = 0;
+        region_with_cap[0].region_info.offset = 0;
+        // Safe as we are the owner of dev and region_info which are valid value,
+        // and we verify the return value.
+        let ret = unsafe {
+            ioctl_with_mut_ref(
+                &self.device,
+                VFIO_DEVICE_GET_REGION_INFO(),
+                &mut (region_with_cap[0].region_info),
+            )
+        };
+        if ret < 0 {
+            return Err(VfioError::VfioDeviceGetRegionInfo(SysError::new(ret)));
+        }
+
+        // region_with_cap[0].cap_info may contain vfio_region_info_cap_sparse_mmap
+        // struct or vfio_region_info_cap_type struct. Both of them begin with
+        // vfio_info_cap_header.
+        // So it is safe to convert cap_info into vfio_info_cap_header pointer first, and
+        // safe to access its elments through this poiner.
+        #[allow(clippy::cast_ptr_alignment)]
+        let cap_header =
+            unsafe { region_with_cap[0].cap_info.as_ptr() as *const vfio_info_cap_header };
+        if unsafe { u32::from((*cap_header).id) } == VFIO_REGION_INFO_CAP_SPARSE_MMAP {
+            // cap_info is vfio_region_sparse_mmap here.
+            // So it is safe to convert cap_info into vfio_info_region_sparse_mmap pointer, and
+            // safe to access its elements through this pointer.
+            #[allow(clippy::cast_ptr_alignment)]
+            let sparse_mmap = unsafe {
+                region_with_cap[0].cap_info.as_ptr() as *const vfio_region_info_cap_sparse_mmap
+            };
+            let mmap_area =
+                unsafe { (*sparse_mmap).areas.as_ptr() as *const vfio_region_sparse_mmap_area };
+
+            // We can now modify the VFIO region mmap information.
+            region.mmap = (unsafe { (*mmap_area).offset }, unsafe { (*mmap_area).size });
+        }
+
+        Ok(())
+    }
+
     fn get_regions(&self) -> Result<Vec<VfioRegion>> {
         let mut regions: Vec<VfioRegion> = Vec::new();
 
@@ -546,7 +611,7 @@ impl VfioDeviceInfo {
             };
             // Safe as we are the owner of dev and reg_info which are valid value,
             // and we verify the return value.
-            let mut ret = unsafe {
+            let ret = unsafe {
                 ioctl_with_mut_ref(&self.device, VFIO_DEVICE_GET_REGION_INFO(), &mut reg_info)
             };
             if ret < 0 {
@@ -554,62 +619,17 @@ impl VfioDeviceInfo {
                 continue;
             }
 
-            let mut mmap_size: u64 = reg_info.size;
-            let mut mmap_offset: u64 = 0;
-            if reg_info.flags & VFIO_REGION_INFO_FLAG_CAPS != 0 && reg_info.argsz > argsz {
-                let cap_len: usize = (reg_info.argsz - argsz) as usize;
-                let mut region_with_cap =
-                    vec_with_array_field::<vfio_region_info_with_cap, u8>(cap_len);
-                region_with_cap[0].region_info.argsz = reg_info.argsz;
-                region_with_cap[0].region_info.flags = 0;
-                region_with_cap[0].region_info.index = i;
-                region_with_cap[0].region_info.cap_offset = 0;
-                region_with_cap[0].region_info.size = 0;
-                region_with_cap[0].region_info.offset = 0;
-                // Safe as we are the owner of dev and region_info which are valid value,
-                // and we verify the return value.
-                ret = unsafe {
-                    ioctl_with_mut_ref(
-                        &self.device,
-                        VFIO_DEVICE_GET_REGION_INFO(),
-                        &mut (region_with_cap[0].region_info),
-                    )
-                };
-                if ret < 0 {
-                    error!("Could not get region #{} info", i);
-                    continue;
-                }
-                // region_with_cap[0].cap_info may contain vfio_region_info_cap_sparse_mmap
-                // struct or vfio_region_info_cap_type struct. Both of them begin with
-                // vfio_info_cap_header.
-                // So it is safe to convert cap_info into vfio_info_cap_header pointer first, and
-                // safe to access its elments through this poiner.
-                #[allow(clippy::cast_ptr_alignment)]
-                let cap_header =
-                    unsafe { region_with_cap[0].cap_info.as_ptr() as *const vfio_info_cap_header };
-                if unsafe { u32::from((*cap_header).id) } == VFIO_REGION_INFO_CAP_SPARSE_MMAP {
-                    // cap_info is vfio_region_sparse_mmap here.
-                    // So it is safe to convert cap_info into vfio_info_region_sparse_mmap pointer, and
-                    // safe to access its elements through this pointer.
-                    #[allow(clippy::cast_ptr_alignment)]
-                    let sparse_mmap = unsafe {
-                        region_with_cap[0].cap_info.as_ptr()
-                            as *const vfio_region_info_cap_sparse_mmap
-                    };
-                    let mmap_area = unsafe {
-                        (*sparse_mmap).areas.as_ptr() as *const vfio_region_sparse_mmap_area
-                    };
-                    mmap_size = unsafe { (*mmap_area).size };
-                    mmap_offset = unsafe { (*mmap_area).offset };
-                }
-            }
-
-            let region = VfioRegion {
+            let mut region = VfioRegion {
                 flags: reg_info.flags,
                 size: reg_info.size,
                 offset: reg_info.offset,
-                mmap: (mmap_offset, mmap_size),
+                mmap: (0, reg_info.size),
             };
+
+            if let Err(e) = self.get_region_map(&mut region, &reg_info) {
+                error!("Could not get region #{} map {}", i, e);
+                continue;
+            }
 
             debug!("Region #{}", i);
             debug!("\tflag 0x{:x}", region.flags);
