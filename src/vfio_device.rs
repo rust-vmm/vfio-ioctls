@@ -106,6 +106,16 @@ impl fmt::Display for VfioError {
 
 #[repr(C)]
 #[derive(Debug, Default)]
+// A VFIO region structure with an incomplete array for region
+// capabilities information.
+//
+// When the VFIO_DEVICE_GET_REGION_INFO ioctl returns with
+// VFIO_REGION_INFO_FLAG_CAPS flag set, it also provides the size of the region
+// capabilities information. This is a kernel hint for us to fetch this
+// information by calling the same ioctl, but with the argument size set to
+// the region plus the capabilities information array length. The kernel will
+// then fill our vfio_region_info_with_cap structure with both the region info
+// and its capabilities.
 struct vfio_region_info_with_cap {
     region_info: vfio_region_info,
     cap_info: __IncompleteArrayField<u8>,
