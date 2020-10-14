@@ -582,14 +582,14 @@ impl VfioDeviceInfo {
                 // region_with_cap[0].cap_info may contain vfio_region_info_cap_sparse_mmap
                 // struct or vfio_region_info_cap_type struct. Both of them begin with
                 // vfio_info_cap_header.
-                // so safe to convert cap_info into vfio_info_cap_header pointer first, and
+                // So it is safe to convert cap_info into vfio_info_cap_header pointer first, and
                 // safe to access its elments through this poiner.
                 #[allow(clippy::cast_ptr_alignment)]
                 let cap_header =
                     unsafe { region_with_cap[0].cap_info.as_ptr() as *const vfio_info_cap_header };
                 if unsafe { u32::from((*cap_header).id) } == VFIO_REGION_INFO_CAP_SPARSE_MMAP {
-                    // cap_info is vfio_region_sparse_mmap here
-                    // so safe to convert cap_info into vfio_info_region_sparse_mmap pointer, and
+                    // cap_info is vfio_region_sparse_mmap here.
+                    // So it is safe to convert cap_info into vfio_info_region_sparse_mmap pointer, and
                     // safe to access its elements through this pointer.
                     #[allow(clippy::cast_ptr_alignment)]
                     let sparse_mmap = unsafe {
