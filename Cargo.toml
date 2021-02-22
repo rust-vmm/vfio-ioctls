@@ -8,7 +8,7 @@ license = "Apache-2.0 OR BSD-3-Clause"
 edition = "2018"
 
 [dependencies]
-byteorder = "~1.2.1"
+byteorder = "~1.4.2"
 log = "0.4"
 kvm-bindings = "~0"
 kvm-ioctls = "~0"
