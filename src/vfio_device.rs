@@ -819,6 +819,35 @@ impl VfioDevice {
         Ok(())
     }
 
+    /// Unmask IRQ
+    ///
+    /// # Arguments
+    /// * `irq_index` - The type (INTX, MSI or MSI-X) of interrupts to unmask.
+    pub fn unmask_irq(&self, irq_index: u32) -> Result<()> {
+        let irq = self
+            .irqs
+            .get(&irq_index)
+            .ok_or(VfioError::VfioDeviceSetIrq)?;
+        if irq.count == 0 {
+            return Err(VfioError::VfioDeviceSetIrq);
+        }
+
+        let mut irq_set = vec_with_array_field::<vfio_irq_set, u32>(0);
+        irq_set[0].argsz = mem::size_of::<vfio_irq_set>() as u32;
+        irq_set[0].flags = VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_UNMASK;
+        irq_set[0].index = irq_index;
+        irq_set[0].start = 0;
+        irq_set[0].count = 1;
+
+        // Safe as we are the owner of self and irq_set which are valid value
+        let ret = unsafe { ioctl_with_ref(self, VFIO_DEVICE_SET_IRQS(), &irq_set[0]) };
+        if ret < 0 {
+            return Err(VfioError::VfioDeviceSetIrq);
+        }
+
+        Ok(())
+    }
+
     /// Wrapper to enable MSI IRQs.
     pub fn enable_msi(&self, fds: Vec<&EventFd>) -> Result<()> {
         self.enable_irq(VFIO_PCI_MSI_IRQ_INDEX, fds)
