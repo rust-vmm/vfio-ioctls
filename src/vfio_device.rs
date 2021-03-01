@@ -99,7 +99,7 @@ impl fmt::Display for VfioError {
                 write!(f, "failed to remove guest memory map from iommu table")
             }
             VfioError::VfioDeviceGetIrqInfo => write!(f, "failed to get vfio device irq info"),
-            VfioError::VfioDeviceSetIrq => write!(f, "failed to set vfio deviece irq"),
+            VfioError::VfioDeviceSetIrq => write!(f, "failed to set vfio device irq"),
         }
     }
 }
