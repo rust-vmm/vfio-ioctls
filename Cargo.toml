@@ -13,5 +13,5 @@ log = "0.4"
 kvm-bindings = "~0"
 kvm-ioctls = "~0"
 vfio-bindings = "~0"
-vm-memory = { version = "~0", features = ["backend-mmap"] }
-vmm-sys-util = "~0"
+vm-memory = { version = "0.5", features = ["backend-mmap"] }
+vmm-sys-util = "0.8"
