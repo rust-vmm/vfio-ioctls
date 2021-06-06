@@ -784,7 +784,7 @@ impl VfioDevice {
             .irqs
             .get(&irq_index)
             .ok_or(VfioError::VfioDeviceSetIrq)?;
-        if irq.count == 0 {
+        if irq.count == 0 || (irq.count as usize) < event_fds.len() {
             return Err(VfioError::VfioDeviceSetIrq);
         }
 
@@ -794,7 +794,7 @@ impl VfioDevice {
         irq_set[0].flags = VFIO_IRQ_SET_DATA_EVENTFD | VFIO_IRQ_SET_ACTION_TRIGGER;
         irq_set[0].index = irq_index;
         irq_set[0].start = 0;
-        irq_set[0].count = irq.count;
+        irq_set[0].count = event_fds.len() as u32;
 
         {
             // irq_set.data could be none, bool or fd according to flags, so irq_set.data
