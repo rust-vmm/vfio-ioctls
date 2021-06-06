@@ -21,7 +21,7 @@ use kvm_bindings::{
 use kvm_ioctls::DeviceFd;
 use log::{debug, error, warn};
 use vfio_bindings::bindings::vfio::*;
-use vm_memory::{Address, GuestMemory, GuestMemoryMmap, GuestMemoryRegion};
+use vm_memory::{Address, GuestMemory, GuestMemoryRegion, MemoryRegionAddress};
 use vmm_sys_util::errno::Error as SysError;
 use vmm_sys_util::eventfd::EventFd;
 use vmm_sys_util::ioctl::*;
@@ -372,12 +372,15 @@ impl VfioContainer {
     ///
     /// # Parameters
     /// * mem: pinned guest memory which could be accessed by devices binding to the container.
-    pub fn vfio_map_guest_memory(&self, mem: &GuestMemoryMmap) -> Result<()> {
+    pub fn vfio_map_geust_memory<M: GuestMemory>(&self, mem: &M) -> Result<()> {
         mem.with_regions(|_index, region| {
+            let host_addr = region
+                .get_host_address(MemoryRegionAddress(0))
+                .map_err(|_| VfioError::IommuDmaMap)?;
             self.vfio_dma_map(
                 region.start_addr().raw_value(),
                 region.len() as u64,
-                region.as_ptr() as u64,
+                host_addr as u64,
             )
         })?;
         Ok(())
@@ -390,7 +393,7 @@ impl VfioContainer {
     ///
     /// # Parameters
     /// * mem: pinned guest memory which could be accessed by devices binding to the container.
-    pub fn vfio_unmap_guest_memory(&self, mem: &GuestMemoryMmap) -> Result<()> {
+    pub fn vfio_unmap_guest_memory<M: GuestMemory>(&self, mem: &M) -> Result<()> {
         mem.with_regions(|_index, region| {
             self.vfio_dma_unmap(region.start_addr().raw_value(), region.len() as u64)
         })?;
