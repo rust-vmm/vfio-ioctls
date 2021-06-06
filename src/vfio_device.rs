@@ -159,9 +159,9 @@ struct vfio_region_info_with_cap {
 /// Multiple VFIO groups may be associated with the same VFIO container to share the underline
 /// address translation mapping tables.
 pub struct VfioContainer {
-    container: File,
-    device_fd: Arc<DeviceFd>,
-    groups: Mutex<HashMap<u32, Arc<VfioGroup>>>,
+    pub(crate) container: File,
+    pub(crate) device_fd: Arc<DeviceFd>,
+    pub(crate) groups: Mutex<HashMap<u32, Arc<VfioGroup>>>,
 }
 
 impl VfioContainer {
@@ -413,9 +413,9 @@ impl AsRawFd for VfioContainer {
 /// container. But current implementation assumes there's only one device per group to simplify
 /// implementation. With such an assumption, the `VfioGroup` becomes an internal implementation
 /// details.
-struct VfioGroup {
-    id: u32,
-    group: File,
+pub struct VfioGroup {
+    pub(crate) id: u32,
+    pub(crate) group: File,
 }
 
 impl VfioGroup {
@@ -499,14 +499,17 @@ impl AsRawFd for VfioGroup {
     }
 }
 
-struct VfioRegion {
-    flags: u32,
-    size: u64,
-    offset: u64,
-    mmap: (u64, u64),
+/// Information abour VFIO MMIO region.
+#[derive(Copy, Clone, Debug)]
+pub struct VfioRegion {
+    pub(crate) flags: u32,
+    pub(crate) size: u64,
+    pub(crate) offset: u64,
+    pub(crate) mmap: (u64, u64),
 }
 
 /// Information abour VFIO interrupts.
+#[derive(Copy, Clone, Debug, PartialEq)]
 pub struct VfioIrq {
     /// Flags for irq.
     pub flags: u32,
@@ -679,12 +682,12 @@ impl VfioDeviceInfo {
 /// read/write/mmap offsets on the device descriptor, as well as mechanisms for describing and
 /// registering interrupt notifications.
 pub struct VfioDevice {
-    device: ManuallyDrop<File>,
-    flags: u32,
-    regions: Vec<VfioRegion>,
-    irqs: HashMap<u32, VfioIrq>,
-    group: Arc<VfioGroup>,
-    container: Arc<VfioContainer>,
+    pub(crate) device: ManuallyDrop<File>,
+    pub(crate) flags: u32,
+    pub(crate) regions: Vec<VfioRegion>,
+    pub(crate) irqs: HashMap<u32, VfioIrq>,
+    pub(crate) group: Arc<VfioGroup>,
+    pub(crate) container: Arc<VfioContainer>,
 }
 
 impl VfioDevice {
