@@ -33,7 +33,7 @@ use crate::vfio_ioctls::*;
 #[derive(Debug)]
 pub enum VfioError {
     OpenContainer(io::Error),
-    OpenGroup(io::Error),
+    OpenGroup(io::Error, String),
     GetGroupStatus,
     GroupViable,
     VfioApiVersion,
@@ -61,8 +61,8 @@ impl fmt::Display for VfioError {
             VfioError::OpenContainer(e) => {
                 write!(f, "failed to open /dev/vfio/vfio container: {}", e)
             }
-            VfioError::OpenGroup(e) => {
-                write!(f, "failed to open /dev/vfio/$group_num group: {}", e)
+            VfioError::OpenGroup(e, ref p) => {
+                write!(f, "failed to open /dev/vfio/{} group: {}", p, e)
             }
             VfioError::GetGroupStatus => write!(f, "failed to get Group Status"),
             VfioError::GroupViable => write!(f, "group is inviable"),
@@ -100,6 +100,33 @@ impl fmt::Display for VfioError {
             }
             VfioError::VfioDeviceGetIrqInfo => write!(f, "failed to get vfio device irq info"),
             VfioError::VfioDeviceSetIrq => write!(f, "failed to set vfio device irq"),
+        }
+    }
+}
+
+impl std::error::Error for VfioError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            VfioError::OpenContainer(e) => Some(e),
+            VfioError::OpenGroup(e, ref _p) => Some(e),
+            VfioError::GetGroupStatus => None,
+            VfioError::GroupViable => None,
+            VfioError::VfioApiVersion => None,
+            VfioError::VfioExtension => None,
+            VfioError::VfioInvalidType => None,
+            VfioError::VfioType1V2 => None,
+            VfioError::GroupSetContainer => None,
+            VfioError::UnsetContainer => None,
+            VfioError::ContainerSetIOMMU => None,
+            VfioError::GroupGetDeviceFD => None,
+            VfioError::KvmSetDeviceAttr(e) => Some(e),
+            VfioError::VfioDeviceGetInfo => None,
+            VfioError::VfioDeviceGetRegionInfo(e) => Some(e),
+            VfioError::InvalidPath => None,
+            VfioError::IommuDmaMap => None,
+            VfioError::IommuDmaUnmap => None,
+            VfioError::VfioDeviceGetIrqInfo => None,
+            VfioError::VfioDeviceSetIrq => None,
         }
     }
 }
@@ -399,7 +426,7 @@ impl VfioGroup {
             .read(true)
             .write(true)
             .open(&group_path)
-            .map_err(VfioError::OpenGroup)?;
+            .map_err(|e| VfioError::OpenGroup(e, id.to_string()))?;
 
         let mut group_status = vfio_group_status {
             argsz: mem::size_of::<vfio_group_status>() as u32,
