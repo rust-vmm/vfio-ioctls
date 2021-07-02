@@ -15,9 +15,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use byteorder::{ByteOrder, LittleEndian};
+#[cfg(feature = "kvm")]
 use kvm_bindings::{
     kvm_device_attr, KVM_DEV_VFIO_GROUP, KVM_DEV_VFIO_GROUP_ADD, KVM_DEV_VFIO_GROUP_DEL,
 };
+#[cfg(feature = "kvm")]
 use kvm_ioctls::DeviceFd;
 use log::{debug, error, warn};
 use vfio_bindings::bindings::vfio::*;
@@ -44,6 +46,7 @@ pub enum VfioError {
     UnsetContainer,
     ContainerSetIOMMU,
     GroupGetDeviceFD,
+    #[cfg(feature = "kvm")]
     KvmSetDeviceAttr(SysError),
     VfioDeviceGetInfo,
     VfioDeviceGetRegionInfo(SysError),
@@ -84,6 +87,7 @@ impl fmt::Display for VfioError {
                 "failed to set container's IOMMU driver type as VfioType1V2"
             ),
             VfioError::GroupGetDeviceFD => write!(f, "failed to get vfio device fd"),
+            #[cfg(feature = "kvm")]
             VfioError::KvmSetDeviceAttr(e) => {
                 write!(f, "failed to set KVM vfio device's attribute: {}", e)
             }
@@ -119,6 +123,7 @@ impl std::error::Error for VfioError {
             VfioError::UnsetContainer => None,
             VfioError::ContainerSetIOMMU => None,
             VfioError::GroupGetDeviceFD => None,
+            #[cfg(feature = "kvm")]
             VfioError::KvmSetDeviceAttr(e) => Some(e),
             VfioError::VfioDeviceGetInfo => None,
             VfioError::VfioDeviceGetRegionInfo(e) => Some(e),
@@ -168,7 +173,7 @@ impl VfioContainer {
     /// Create a container wrapper object.
     ///
     /// # Arguments
-    /// * `device_fd`: file handle of the KVM VFIO device.
+    /// * `device_fd`: file handle of the VFIO device.
     pub fn new(device_fd: Arc<DeviceFd>) -> Result<Self> {
         let container = OpenOptions::new()
             .read(true)
@@ -224,6 +229,7 @@ impl VfioContainer {
         Ok(())
     }
 
+    #[cfg(feature = "kvm")]
     fn kvm_device_add_group(&self, group_fd: RawFd) -> Result<()> {
         let group_fd_ptr = &group_fd as *const i32;
         let dev_attr = kvm_device_attr {
@@ -238,6 +244,7 @@ impl VfioContainer {
             .map_err(VfioError::KvmSetDeviceAttr)
     }
 
+    #[cfg(feature = "kvm")]
     fn kvm_device_del_group(&self, group_fd: RawFd) -> Result<()> {
         let group_fd_ptr = &group_fd as *const i32;
         let dev_attr = kvm_device_attr {
@@ -281,6 +288,7 @@ impl VfioContainer {
         }
 
         // Add the new group object to the KVM driver.
+        #[cfg(feature = "kvm")]
         if let Err(e) = self.kvm_device_add_group(group.as_raw_fd()) {
             let _ =
                 unsafe { ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd()) };
@@ -302,6 +310,7 @@ impl VfioContainer {
         // - one reference cloned in VfioDevice.drop() and passed into here
         // - one reference held by the groups hashmap
         if Arc::strong_count(&group) == 3 {
+            #[cfg(feature = "kvm")]
             match self.kvm_device_del_group(group.as_raw_fd()) {
                 Ok(_) => {}
                 Err(e) => {
