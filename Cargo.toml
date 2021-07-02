@@ -7,11 +7,15 @@ keywords = ["vfio"]
 license = "Apache-2.0 OR BSD-3-Clause"
 edition = "2018"
 
+[features]
+default = ["kvm"]
+kvm = ["kvm-ioctls", "kvm-bindings"]
+
 [dependencies]
 byteorder = ">=1.2.1"
 log = "0.4"
-kvm-bindings = "~0"
-kvm-ioctls = "~0"
+kvm-bindings = { version = "~0", optional = true }
+kvm-ioctls = { version = "~0", optional = true }
 vfio-bindings = "~0"
 vm-memory = { version = "0.5", features = ["backend-mmap"] }
 vmm-sys-util = "0.8"
