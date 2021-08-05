@@ -382,17 +382,18 @@ impl VfioContainer {
     /// # Parameters
     /// * mem: pinned guest memory which could be accessed by devices binding to the container.
     pub fn vfio_map_geust_memory<M: GuestMemory>(&self, mem: &M) -> Result<()> {
-        mem.with_regions(|_index, region| {
-            let host_addr = region
-                .get_host_address(MemoryRegionAddress(0))
-                .map_err(|_| VfioError::IommuDmaMap)?;
-            self.vfio_dma_map(
-                region.start_addr().raw_value(),
-                region.len() as u64,
-                host_addr as u64,
-            )
-        })?;
-        Ok(())
+        mem.iter()
+            .map(|region| {
+                let host_addr = region
+                    .get_host_address(MemoryRegionAddress(0))
+                    .map_err(|_| VfioError::IommuDmaMap)?;
+                self.vfio_dma_map(
+                    region.start_addr().raw_value(),
+                    region.len() as u64,
+                    host_addr as u64,
+                )
+            })
+            .collect()
     }
 
     /// Remove all guest memory regions from the vfio container's iommu table.
@@ -403,10 +404,9 @@ impl VfioContainer {
     /// # Parameters
     /// * mem: pinned guest memory which could be accessed by devices binding to the container.
     pub fn vfio_unmap_guest_memory<M: GuestMemory>(&self, mem: &M) -> Result<()> {
-        mem.with_regions(|_index, region| {
-            self.vfio_dma_unmap(region.start_addr().raw_value(), region.len() as u64)
-        })?;
-        Ok(())
+        mem.iter()
+            .map(|region| self.vfio_dma_unmap(region.start_addr().raw_value(), region.len() as u64))
+            .collect()
     }
 }
 
