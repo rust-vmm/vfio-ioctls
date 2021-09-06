@@ -232,8 +232,8 @@ impl VfioContainer {
         Ok(())
     }
 
-    fn device_add_group(&self, group_fd: RawFd) -> Result<()> {
-        let group_fd_ptr = &group_fd as *const i32;
+    fn device_add_group(&self, group: &VfioGroup) -> Result<()> {
+        let group_fd_ptr = &group.as_raw_fd() as *const i32;
 
         #[cfg(feature = "kvm")]
         let dev_attr = kvm_device_attr {
@@ -256,8 +256,8 @@ impl VfioContainer {
             .map_err(VfioError::SetDeviceAttr)
     }
 
-    fn device_del_group(&self, group_fd: RawFd) -> Result<()> {
-        let group_fd_ptr = &group_fd as *const i32;
+    fn device_del_group(&self, group: &VfioGroup) -> Result<()> {
+        let group_fd_ptr = &group.as_raw_fd() as *const i32;
         #[cfg(feature = "kvm")]
         let dev_attr = kvm_device_attr {
             flags: 0,
@@ -308,7 +308,7 @@ impl VfioContainer {
         }
 
         // Add the new group object to the hypervisor driver.
-        if let Err(e) = self.device_add_group(group.as_raw_fd()) {
+        if let Err(e) = self.device_add_group(&group) {
             let _ =
                 unsafe { ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd()) };
             return Err(e);
@@ -329,7 +329,7 @@ impl VfioContainer {
         // - one reference cloned in VfioDevice.drop() and passed into here
         // - one reference held by the groups hashmap
         if Arc::strong_count(&group) == 3 {
-            match self.device_del_group(group.as_raw_fd()) {
+            match self.device_del_group(&group) {
                 Ok(_) => {}
                 Err(e) => {
                     error!("Could not delete VFIO group: {:?}", e);
