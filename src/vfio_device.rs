@@ -22,11 +22,11 @@ use kvm_bindings::{
 #[cfg(feature = "kvm")]
 use kvm_ioctls::DeviceFd;
 use log::{debug, error, warn};
-#[cfg(feature = "mshv")]
+#[cfg(all(feature = "mshv", not(feature = "kvm")))]
 use mshv_bindings::{
     mshv_device_attr, MSHV_DEV_VFIO_GROUP, MSHV_DEV_VFIO_GROUP_ADD, MSHV_DEV_VFIO_GROUP_DEL,
 };
-#[cfg(feature = "mshv")]
+#[cfg(all(feature = "mshv", not(feature = "kvm")))]
 use mshv_ioctls::DeviceFd;
 use vfio_bindings::bindings::vfio::*;
 use vm_memory::{Address, GuestMemory, GuestMemoryRegion, MemoryRegionAddress};
@@ -243,7 +243,7 @@ impl VfioContainer {
             addr: group_fd_ptr as u64,
         };
 
-        #[cfg(feature = "mshv")]
+        #[cfg(all(feature = "mshv", not(feature = "kvm")))]
         let dev_attr = mshv_device_attr {
             flags: 0,
             group: MSHV_DEV_VFIO_GROUP,
@@ -266,7 +266,7 @@ impl VfioContainer {
             addr: group_fd_ptr as u64,
         };
 
-        #[cfg(feature = "mshv")]
+        #[cfg(all(feature = "mshv", not(feature = "kvm")))]
         let dev_attr = mshv_device_attr {
             flags: 0,
             group: MSHV_DEV_VFIO_GROUP,
