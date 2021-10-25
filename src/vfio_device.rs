@@ -168,6 +168,7 @@ struct vfio_region_info_with_cap {
 /// address translation mapping tables.
 pub struct VfioContainer {
     pub(crate) container: File,
+    #[cfg(any(feature = "kvm", feature = "mshv"))]
     pub(crate) device_fd: Arc<DeviceFd>,
     pub(crate) groups: Mutex<HashMap<u32, Arc<VfioGroup>>>,
 }
@@ -177,7 +178,9 @@ impl VfioContainer {
     ///
     /// # Arguments
     /// * `device_fd`: file handle of the VFIO device.
-    pub fn new(device_fd: Arc<DeviceFd>) -> Result<Self> {
+    pub fn new(
+        #[cfg(any(feature = "kvm", feature = "mshv"))] device_fd: Arc<DeviceFd>,
+    ) -> Result<Self> {
         let container = OpenOptions::new()
             .read(true)
             .write(true)
@@ -186,6 +189,7 @@ impl VfioContainer {
 
         let container = VfioContainer {
             container,
+            #[cfg(any(feature = "kvm", feature = "mshv"))]
             device_fd,
             groups: Mutex::new(HashMap::new()),
         };
@@ -232,6 +236,7 @@ impl VfioContainer {
         Ok(())
     }
 
+    #[cfg(any(feature = "kvm", feature = "mshv"))]
     fn device_add_group(&self, group: &VfioGroup) -> Result<()> {
         let group_fd_ptr = &group.as_raw_fd() as *const i32;
 
@@ -256,6 +261,7 @@ impl VfioContainer {
             .map_err(VfioError::SetDeviceAttr)
     }
 
+    #[cfg(any(feature = "kvm", feature = "mshv"))]
     fn device_del_group(&self, group: &VfioGroup) -> Result<()> {
         let group_fd_ptr = &group.as_raw_fd() as *const i32;
         #[cfg(feature = "kvm")]
@@ -308,6 +314,7 @@ impl VfioContainer {
         }
 
         // Add the new group object to the hypervisor driver.
+        #[cfg(any(feature = "kvm", feature = "mshv"))]
         if let Err(e) = self.device_add_group(&group) {
             let _ =
                 unsafe { ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd()) };
@@ -329,6 +336,7 @@ impl VfioContainer {
         // - one reference cloned in VfioDevice.drop() and passed into here
         // - one reference held by the groups hashmap
         if Arc::strong_count(&group) == 3 {
+            #[cfg(any(feature = "kvm", feature = "mshv"))]
             match self.device_del_group(&group) {
                 Ok(_) => {}
                 Err(e) => {
