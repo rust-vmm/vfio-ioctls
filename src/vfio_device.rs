@@ -553,7 +553,6 @@ pub struct VfioRegion {
     pub(crate) flags: u32,
     pub(crate) size: u64,
     pub(crate) offset: u64,
-    pub(crate) mmap: (u64, u64),
     pub(crate) caps: Vec<VfioRegionInfoCap>,
 }
 
@@ -710,7 +709,6 @@ impl VfioDeviceInfo {
                 flags: reg_info.flags,
                 size: reg_info.size,
                 offset: reg_info.offset,
-                mmap: (0, reg_info.size),
                 caps: Vec::new(),
             };
 
@@ -977,20 +975,6 @@ impl VfioDevice {
         match self.regions.get(index as usize) {
             Some(v) => v.offset,
             None => 0,
-        }
-    }
-
-    /// Get a region's mmap info.
-    ///
-    /// # Arguments
-    /// * `index` - The index of memory region.
-    pub fn get_region_mmap(&self, index: u32) -> (u64, u64) {
-        match self.regions.get(index as usize) {
-            Some(v) => v.mmap,
-            None => {
-                warn!("get_region_mmap with invalid index: {}", index);
-                (0, 0)
-            }
         }
     }
 
