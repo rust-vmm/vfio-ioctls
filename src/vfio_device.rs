@@ -524,13 +524,37 @@ impl AsRawFd for VfioGroup {
     }
 }
 
+/// Represent one area of the sparse mmap
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct VfioRegionSparseMmapArea {
+    /// Offset of mmap'able area within region
+    pub offset: u64,
+    /// Size of mmap'able area
+    pub size: u64,
+}
+
+/// List of sparse mmap areas
+#[derive(Clone, Debug, PartialEq)]
+pub struct VfioRegionInfoCapSparseMmap {
+    /// List of areas
+    pub areas: Vec<VfioRegionSparseMmapArea>,
+}
+
+/// List of capabilities that can be related to a region.
+#[derive(Clone, Debug, PartialEq)]
+pub enum VfioRegionInfoCap {
+    /// Sparse memory mapping type
+    SparseMmap(VfioRegionInfoCapSparseMmap),
+}
+
 /// Information abour VFIO MMIO region.
-#[derive(Copy, Clone, Debug)]
+#[derive(Clone, Debug)]
 pub struct VfioRegion {
     pub(crate) flags: u32,
     pub(crate) size: u64,
     pub(crate) offset: u64,
     pub(crate) mmap: (u64, u64),
+    pub(crate) caps: Vec<VfioRegionInfoCap>,
 }
 
 /// Information abour VFIO interrupts.
@@ -646,8 +670,13 @@ impl VfioDeviceInfo {
             let mmap_area =
                 unsafe { (*sparse_mmap).areas.as_ptr() as *const vfio_region_sparse_mmap_area };
 
-            // We can now modify the VFIO region mmap information.
-            region.mmap = (unsafe { (*mmap_area).offset }, unsafe { (*mmap_area).size });
+            let cap = VfioRegionInfoCapSparseMmap {
+                areas: vec![VfioRegionSparseMmapArea {
+                    offset: unsafe { (*mmap_area).offset },
+                    size: unsafe { (*mmap_area).size },
+                }],
+            };
+            region.caps.push(VfioRegionInfoCap::SparseMmap(cap));
         }
 
         Ok(())
@@ -682,6 +711,7 @@ impl VfioDeviceInfo {
                 size: reg_info.size,
                 offset: reg_info.offset,
                 mmap: (0, reg_info.size),
+                caps: Vec::new(),
             };
 
             if let Err(e) = self.get_region_map(&mut region, &reg_info) {
@@ -974,6 +1004,20 @@ impl VfioDevice {
             None => {
                 warn!("get_region_size with invalid index: {}", index);
                 0
+            }
+        }
+    }
+
+    /// Get region's list of capabilities
+    ///
+    /// # Arguments
+    /// * `index` - The index of memory region.
+    pub fn get_region_caps(&self, index: u32) -> Vec<VfioRegionInfoCap> {
+        match self.regions.get(index as usize) {
+            Some(v) => v.caps.clone(),
+            None => {
+                warn!("get_region_caps with invalid index: {}", index);
+                Vec::new()
             }
         }
     }
