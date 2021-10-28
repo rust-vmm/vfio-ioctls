@@ -61,4 +61,7 @@ mod fam;
 mod vfio_device;
 mod vfio_ioctls;
 
-pub use vfio_device::{VfioContainer, VfioDevice, VfioError, VfioGroup, VfioIrq, VfioRegion};
+pub use vfio_device::{
+    VfioContainer, VfioDevice, VfioError, VfioGroup, VfioIrq, VfioRegion, VfioRegionInfoCap,
+    VfioRegionInfoCapSparseMmap, VfioRegionSparseMmapArea,
+};
