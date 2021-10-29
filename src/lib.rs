@@ -63,5 +63,6 @@ mod vfio_ioctls;
 
 pub use vfio_device::{
     VfioContainer, VfioDevice, VfioError, VfioGroup, VfioIrq, VfioRegion, VfioRegionInfoCap,
-    VfioRegionInfoCapSparseMmap, VfioRegionSparseMmapArea,
+    VfioRegionInfoCapNvlink2Lnkspd, VfioRegionInfoCapNvlink2Ssatgt, VfioRegionInfoCapSparseMmap,
+    VfioRegionInfoCapType, VfioRegionSparseMmapArea,
 };
