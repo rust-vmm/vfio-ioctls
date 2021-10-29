@@ -540,11 +540,42 @@ pub struct VfioRegionInfoCapSparseMmap {
     pub areas: Vec<VfioRegionSparseMmapArea>,
 }
 
+/// Represent a specific device by providing type and subtype
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct VfioRegionInfoCapType {
+    /// Device type
+    pub type_: u32,
+    /// Device subtype
+    pub subtype: u32,
+}
+
+/// Carry NVLink SSA TGT information
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct VfioRegionInfoCapNvlink2Ssatgt {
+    /// TGT value
+    pub tgt: u64,
+}
+
+/// Carry NVLink link speed information
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct VfioRegionInfoCapNvlink2Lnkspd {
+    /// Link speed value
+    pub link_speed: u32,
+}
+
 /// List of capabilities that can be related to a region.
 #[derive(Clone, Debug, PartialEq)]
 pub enum VfioRegionInfoCap {
     /// Sparse memory mapping type
     SparseMmap(VfioRegionInfoCapSparseMmap),
+    /// Capability holding type and subtype
+    Type(VfioRegionInfoCapType),
+    /// Indicate if the region is mmap'able with the presence of MSI-X region
+    MsixMappable,
+    /// NVLink SSA TGT
+    Nvlink2Ssatgt(VfioRegionInfoCapNvlink2Ssatgt),
+    /// NVLink Link Speed
+    Nvlink2Lnkspd(VfioRegionInfoCapNvlink2Lnkspd),
 }
 
 /// Information abour VFIO MMIO region.
@@ -666,24 +697,61 @@ impl VfioDeviceInfo {
                     *(info_ptr.offset(next_cap_offset as isize) as *const vfio_info_cap_header)
                 };
 
-                if u32::from(cap_header.id) == VFIO_REGION_INFO_CAP_SPARSE_MMAP {
-                    let sparse_mmap = unsafe {
-                        info_ptr.offset(next_cap_offset as isize)
-                            as *const vfio_region_info_cap_sparse_mmap
-                    };
-                    let nr_areas = unsafe { (*sparse_mmap).nr_areas };
-                    let areas = unsafe { (*sparse_mmap).areas.as_slice(nr_areas as usize) };
+                match u32::from(cap_header.id) {
+                    VFIO_REGION_INFO_CAP_SPARSE_MMAP => {
+                        let sparse_mmap = unsafe {
+                            info_ptr.offset(next_cap_offset as isize)
+                                as *const vfio_region_info_cap_sparse_mmap
+                        };
+                        let nr_areas = unsafe { (*sparse_mmap).nr_areas };
+                        let areas = unsafe { (*sparse_mmap).areas.as_slice(nr_areas as usize) };
 
-                    let cap = VfioRegionInfoCapSparseMmap {
-                        areas: areas
-                            .iter()
-                            .map(|a| VfioRegionSparseMmapArea {
-                                offset: a.offset,
-                                size: a.size,
-                            })
-                            .collect(),
-                    };
-                    region.caps.push(VfioRegionInfoCap::SparseMmap(cap));
+                        let cap = VfioRegionInfoCapSparseMmap {
+                            areas: areas
+                                .iter()
+                                .map(|a| VfioRegionSparseMmapArea {
+                                    offset: a.offset,
+                                    size: a.size,
+                                })
+                                .collect(),
+                        };
+                        region.caps.push(VfioRegionInfoCap::SparseMmap(cap));
+                    }
+                    VFIO_REGION_INFO_CAP_TYPE => {
+                        let type_ = unsafe {
+                            *(info_ptr.offset(next_cap_offset as isize)
+                                as *const vfio_region_info_cap_type)
+                        };
+                        let cap = VfioRegionInfoCapType {
+                            type_: type_.type_,
+                            subtype: type_.subtype,
+                        };
+                        region.caps.push(VfioRegionInfoCap::Type(cap));
+                    }
+                    VFIO_REGION_INFO_CAP_MSIX_MAPPABLE => {
+                        region.caps.push(VfioRegionInfoCap::MsixMappable);
+                    }
+                    VFIO_REGION_INFO_CAP_NVLINK2_SSATGT => {
+                        let nvlink2_ssatgt = unsafe {
+                            *(info_ptr.offset(next_cap_offset as isize)
+                                as *const vfio_region_info_cap_nvlink2_ssatgt)
+                        };
+                        let cap = VfioRegionInfoCapNvlink2Ssatgt {
+                            tgt: nvlink2_ssatgt.tgt,
+                        };
+                        region.caps.push(VfioRegionInfoCap::Nvlink2Ssatgt(cap));
+                    }
+                    VFIO_REGION_INFO_CAP_NVLINK2_LNKSPD => {
+                        let nvlink2_lnkspd = unsafe {
+                            *(info_ptr.offset(next_cap_offset as isize)
+                                as *const vfio_region_info_cap_nvlink2_lnkspd)
+                        };
+                        let cap = VfioRegionInfoCapNvlink2Lnkspd {
+                            link_speed: nvlink2_lnkspd.link_speed,
+                        };
+                        region.caps.push(VfioRegionInfoCap::Nvlink2Lnkspd(cap));
+                    }
+                    _ => {}
                 }
 
                 next_cap_offset = cap_header.next;
