@@ -650,32 +650,44 @@ impl VfioDeviceInfo {
             return Err(VfioError::VfioDeviceGetRegionInfo(SysError::new(ret)));
         }
 
-        // region_with_cap[0].cap_info may contain vfio_region_info_cap_sparse_mmap
-        // struct or vfio_region_info_cap_type struct. Both of them begin with
-        // vfio_info_cap_header.
-        // So it is safe to convert cap_info into vfio_info_cap_header pointer first, and
-        // safe to access its elments through this poiner.
-        #[allow(clippy::cast_ptr_alignment)]
-        let cap_header =
-            unsafe { region_with_cap[0].cap_info.as_ptr() as *const vfio_info_cap_header };
-        if unsafe { u32::from((*cap_header).id) } == VFIO_REGION_INFO_CAP_SPARSE_MMAP {
-            // cap_info is vfio_region_sparse_mmap here.
-            // So it is safe to convert cap_info into vfio_info_region_sparse_mmap pointer, and
-            // safe to access its elements through this pointer.
-            #[allow(clippy::cast_ptr_alignment)]
-            let sparse_mmap = unsafe {
-                region_with_cap[0].cap_info.as_ptr() as *const vfio_region_info_cap_sparse_mmap
-            };
-            let mmap_area =
-                unsafe { (*sparse_mmap).areas.as_ptr() as *const vfio_region_sparse_mmap_area };
+        // region_with_cap[0] may contain different types of structure
+        // depending on the capability type, but all of them begin with
+        // vfio_info_cap_header in order to identify the capability type,
+        // version and if there's another capability after this one.
+        // It is safe to convert region_with_cap[0] with an offset of
+        // cap_offset into vfio_info_cap_header pointer and access its
+        // elements, as long as cap_offset is greater than region_info_size.
+        if region_with_cap[0].region_info.cap_offset >= region_info_size {
+            let mut next_cap_offset = region_with_cap[0].region_info.cap_offset;
+            let info_ptr = &region_with_cap[0] as *const vfio_region_info_with_cap as *const u8;
 
-            let cap = VfioRegionInfoCapSparseMmap {
-                areas: vec![VfioRegionSparseMmapArea {
-                    offset: unsafe { (*mmap_area).offset },
-                    size: unsafe { (*mmap_area).size },
-                }],
-            };
-            region.caps.push(VfioRegionInfoCap::SparseMmap(cap));
+            while next_cap_offset >= region_info_size {
+                let cap_header = unsafe {
+                    *(info_ptr.offset(next_cap_offset as isize) as *const vfio_info_cap_header)
+                };
+
+                if u32::from(cap_header.id) == VFIO_REGION_INFO_CAP_SPARSE_MMAP {
+                    let sparse_mmap = unsafe {
+                        info_ptr.offset(next_cap_offset as isize)
+                            as *const vfio_region_info_cap_sparse_mmap
+                    };
+                    let nr_areas = unsafe { (*sparse_mmap).nr_areas };
+                    let areas = unsafe { (*sparse_mmap).areas.as_slice(nr_areas as usize) };
+
+                    let cap = VfioRegionInfoCapSparseMmap {
+                        areas: areas
+                            .iter()
+                            .map(|a| VfioRegionSparseMmapArea {
+                                offset: a.offset,
+                                size: a.size,
+                            })
+                            .collect(),
+                    };
+                    region.caps.push(VfioRegionInfoCap::SparseMmap(cap));
+                }
+
+                next_cap_offset = cap_header.next;
+            }
         }
 
         Ok(())
