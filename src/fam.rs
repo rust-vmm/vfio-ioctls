@@ -22,8 +22,8 @@ fn vec_with_size_in_bytes<T: Default>(size_in_bytes: usize) -> Vec<T> {
 /// pub struct __IncompleteArrayField<T>(::std::marker::PhantomData<T>);
 /// #[repr(C)]
 /// struct Foo {
-///    some_data: ControlMessageHeader,
-///    entries: __IncompleteArrayField<u32>,
+///     some_data: ControlMessageHeader,
+///     entries: __IncompleteArrayField<u32>,
 /// }
 /// ```
 ///
