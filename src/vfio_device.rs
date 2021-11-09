@@ -399,7 +399,7 @@ impl VfioContainer {
     ///
     /// # Parameters
     /// * mem: pinned guest memory which could be accessed by devices binding to the container.
-    pub fn vfio_map_geust_memory<M: GuestMemory>(&self, mem: &M) -> Result<()> {
+    pub fn vfio_map_guest_memory<M: GuestMemory>(&self, mem: &M) -> Result<()> {
         mem.iter().try_for_each(|region| {
             let host_addr = region
                 .get_host_address(MemoryRegionAddress(0))
