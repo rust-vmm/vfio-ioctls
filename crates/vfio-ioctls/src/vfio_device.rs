@@ -10,6 +10,7 @@ use std::mem::{self, ManuallyDrop};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::prelude::FileExt;
 use std::path::Path;
+#[cfg(not(test))]
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
@@ -383,18 +384,22 @@ pub struct VfioGroup {
 }
 
 impl VfioGroup {
+    #[cfg(not(test))]
+    fn open_group_file(id: u32) -> Result<File> {
+        let group_path = Path::new("/dev/vfio").join(id.to_string());
+        OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&group_path)
+            .map_err(|e| VfioError::OpenGroup(e, id.to_string()))
+    }
+
     /// Create a new VfioGroup object.
     ///
     /// # Parameters
     /// * `id`: ID(index) of the VFIO group file.
     fn new(id: u32) -> Result<Self> {
-        let group_path = Path::new("/dev/vfio").join(id.to_string());
-        let group = OpenOptions::new()
-            .read(true)
-            .write(true)
-            .open(&group_path)
-            .map_err(|e| VfioError::OpenGroup(e, id.to_string()))?;
-
+        let group = Self::open_group_file(id)?;
         let mut group_status = vfio_group_status {
             argsz: mem::size_of::<vfio_group_status>() as u32,
             flags: 0,
@@ -726,6 +731,7 @@ pub struct VfioDevice {
 }
 
 impl VfioDevice {
+    #[cfg(not(test))]
     fn get_group_id_from_path(sysfspath: &Path) -> Result<u32> {
         let uuid_path: PathBuf = [sysfspath, Path::new("iommu_group")].iter().collect();
         let group_path = uuid_path.read_link().map_err(|_| VfioError::InvalidPath)?;
@@ -1068,5 +1074,28 @@ impl Drop for VfioDevice {
             ManuallyDrop::drop(&mut self.device);
         }
         self.container.put_group(self.group.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use vmm_sys_util::tempfile::TempFile;
+
+    impl VfioGroup {
+        pub(crate) fn open_group_file(id: u32) -> Result<File> {
+            let tmp_file = TempFile::new().unwrap();
+            OpenOptions::new()
+                .read(true)
+                .write(true)
+                .open(tmp_file.as_path())
+                .map_err(|e| VfioError::OpenGroup(e, id.to_string()))
+        }
+    }
+
+    impl VfioDevice {
+        pub(crate) fn get_group_id_from_path(_sysfspath: &Path) -> Result<u32> {
+            Ok(3)
+        }
     }
 }
