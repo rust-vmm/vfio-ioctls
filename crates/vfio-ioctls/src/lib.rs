@@ -57,12 +57,136 @@
 #[macro_use]
 extern crate vmm_sys_util;
 
+use std::{fmt, io};
+use vmm_sys_util::errno::Error as SysError;
+
 mod fam;
 mod vfio_device;
 mod vfio_ioctls;
 
 pub use vfio_device::{
-    VfioContainer, VfioDevice, VfioError, VfioGroup, VfioIrq, VfioRegion, VfioRegionInfoCap,
+    VfioContainer, VfioDevice, VfioGroup, VfioIrq, VfioRegion, VfioRegionInfoCap,
     VfioRegionInfoCapNvlink2Lnkspd, VfioRegionInfoCapNvlink2Ssatgt, VfioRegionInfoCapSparseMmap,
     VfioRegionInfoCapType, VfioRegionSparseMmapArea,
 };
+
+#[allow(missing_docs)]
+#[derive(Debug)]
+pub enum VfioError {
+    OpenContainer(io::Error),
+    OpenGroup(io::Error, String),
+    GetGroupStatus,
+    GroupViable,
+    VfioApiVersion,
+    VfioExtension,
+    VfioInvalidType,
+    VfioType1V2,
+    GroupSetContainer,
+    UnsetContainer,
+    ContainerSetIOMMU,
+    GroupGetDeviceFD,
+    SetDeviceAttr(SysError),
+    VfioDeviceGetInfo,
+    VfioDeviceGetRegionInfo(SysError),
+    InvalidPath,
+    IommuDmaMap,
+    IommuDmaUnmap,
+    VfioDeviceGetIrqInfo,
+    VfioDeviceSetIrq,
+}
+
+/// Specialized version of `Result` for VFIO subsystem.
+pub type Result<T> = std::result::Result<T, VfioError>;
+
+impl fmt::Display for VfioError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            VfioError::OpenContainer(e) => {
+                write!(f, "failed to open /dev/vfio/vfio container: {}", e)
+            }
+            VfioError::OpenGroup(e, ref p) => {
+                write!(f, "failed to open /dev/vfio/{} group: {}", p, e)
+            }
+            VfioError::GetGroupStatus => write!(f, "failed to get Group Status"),
+            VfioError::GroupViable => write!(f, "group is inviable"),
+            VfioError::VfioApiVersion => write!(
+                f,
+                "vfio API version doesn't match with VFIO_API_VERSION defined in vfio-bindings"
+            ),
+            VfioError::VfioExtension => write!(f, "failed to check VFIO extension"),
+            VfioError::VfioInvalidType => write!(f, "invalid VFIO type"),
+            VfioError::VfioType1V2 => {
+                write!(f, "container dones't support VfioType1V2 IOMMU driver type")
+            }
+            VfioError::GroupSetContainer => {
+                write!(f, "failed to add vfio group into vfio container")
+            }
+            VfioError::UnsetContainer => write!(f, "failed to unset vfio container"),
+            VfioError::ContainerSetIOMMU => write!(
+                f,
+                "failed to set container's IOMMU driver type as VfioType1V2"
+            ),
+            VfioError::GroupGetDeviceFD => write!(f, "failed to get vfio device fd"),
+            VfioError::SetDeviceAttr(e) => {
+                write!(f, "failed to set vfio device's attribute: {}", e)
+            }
+            VfioError::VfioDeviceGetInfo => {
+                write!(f, "failed to get vfio device's info or info doesn't match")
+            }
+            VfioError::VfioDeviceGetRegionInfo(e) => {
+                write!(f, "failed to get vfio device's region info: {}", e)
+            }
+            VfioError::InvalidPath => write!(f, "invalid file path"),
+            VfioError::IommuDmaMap => write!(f, "failed to add guest memory map into iommu table"),
+            VfioError::IommuDmaUnmap => {
+                write!(f, "failed to remove guest memory map from iommu table")
+            }
+            VfioError::VfioDeviceGetIrqInfo => write!(f, "failed to get vfio device irq info"),
+            VfioError::VfioDeviceSetIrq => write!(f, "failed to set vfio device irq"),
+        }
+    }
+}
+
+impl std::error::Error for VfioError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            VfioError::OpenContainer(e) => Some(e),
+            VfioError::OpenGroup(e, ref _p) => Some(e),
+            VfioError::GetGroupStatus => None,
+            VfioError::GroupViable => None,
+            VfioError::VfioApiVersion => None,
+            VfioError::VfioExtension => None,
+            VfioError::VfioInvalidType => None,
+            VfioError::VfioType1V2 => None,
+            VfioError::GroupSetContainer => None,
+            VfioError::UnsetContainer => None,
+            VfioError::ContainerSetIOMMU => None,
+            VfioError::GroupGetDeviceFD => None,
+            VfioError::SetDeviceAttr(e) => Some(e),
+            VfioError::VfioDeviceGetInfo => None,
+            VfioError::VfioDeviceGetRegionInfo(e) => Some(e),
+            VfioError::InvalidPath => None,
+            VfioError::IommuDmaMap => None,
+            VfioError::IommuDmaUnmap => None,
+            VfioError::VfioDeviceGetIrqInfo => None,
+            VfioError::VfioDeviceSetIrq => None,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::error::Error;
+
+    #[test]
+    fn test_vfio_error_fmt() {
+        let e = VfioError::GetGroupStatus;
+        let e2 = VfioError::OpenContainer(std::io::Error::from(std::io::ErrorKind::Other));
+        let str = format!("{}", e);
+
+        assert_eq!(&str, "failed to get Group Status");
+        assert!(e2.source().is_some());
+        assert!(e.source().is_none());
+    }
+}
