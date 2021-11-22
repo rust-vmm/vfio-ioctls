@@ -34,3 +34,26 @@ ioctl_io_nr!(VFIO_IOMMU_MAP_DMA, VFIO_TYPE, VFIO_BASE + 13);
 ioctl_io_nr!(VFIO_IOMMU_UNMAP_DMA, VFIO_TYPE, VFIO_BASE + 14);
 ioctl_io_nr!(VFIO_IOMMU_ENABLE, VFIO_TYPE, VFIO_BASE + 15);
 ioctl_io_nr!(VFIO_IOMMU_DISABLE, VFIO_TYPE, VFIO_BASE + 16);
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_vfio_ioctl_code() {
+        assert_eq!(VFIO_GET_API_VERSION(), 15204);
+        assert_eq!(VFIO_CHECK_EXTENSION(), 15205);
+        assert_eq!(VFIO_SET_IOMMU(), 15206);
+        assert_eq!(VFIO_GROUP_GET_STATUS(), 15207);
+        assert_eq!(VFIO_GROUP_SET_CONTAINER(), 15208);
+        assert_eq!(VFIO_GROUP_UNSET_CONTAINER(), 15209);
+        assert_eq!(VFIO_GROUP_GET_DEVICE_FD(), 15210);
+        assert_eq!(VFIO_DEVICE_GET_INFO(), 15211);
+        assert_eq!(VFIO_DEVICE_GET_REGION_INFO(), 15212);
+        assert_eq!(VFIO_DEVICE_GET_IRQ_INFO(), 15213);
+        assert_eq!(VFIO_DEVICE_SET_IRQS(), 15214);
+        assert_eq!(VFIO_DEVICE_RESET(), 15215);
+        assert_eq!(VFIO_DEVICE_IOEVENTFD(), 15220);
+        assert_eq!(VFIO_IOMMU_DISABLE(), 15220);
+    }
+}
