@@ -2,10 +2,12 @@
 name = "vfio-ioctls"
 version = "0.1.0"
 authors = ["The Cloud Hypervisor Authors", "Liu Jiang <gerry@linux.alibaba.com>"]
-description = "Safe wrappers over VFIO ioctls"
-keywords = ["vfio"]
 license = "Apache-2.0 OR BSD-3-Clause"
+description = "Safe wrappers over VFIO ioctls"
+repository = "https://github.com/rust-vmm/vfio"
+readme = "README.md"
 edition = "2018"
+keywords = ["vfio"]
 
 [features]
 default = ["kvm"]
