@@ -57,7 +57,8 @@
 #[macro_use]
 extern crate vmm_sys_util;
 
-use std::{fmt, io};
+use std::io;
+use thiserror::Error;
 use vmm_sys_util::errno::Error as SysError;
 
 mod fam;
@@ -70,109 +71,54 @@ pub use vfio_device::{
     VfioRegionInfoCapType, VfioRegionSparseMmapArea,
 };
 
+/// Error codes for VFIO operations.
+#[derive(Debug, Error)]
 #[allow(missing_docs)]
-#[derive(Debug)]
 pub enum VfioError {
-    OpenContainer(io::Error),
-    OpenGroup(io::Error, String),
+    #[error("failed to open /dev/vfio/vfio container: {0}")]
+    OpenContainer(#[source] io::Error),
+    #[error("failed to open /dev/vfio/{1} group: {0}")]
+    OpenGroup(#[source] io::Error, String),
+    #[error("failed to get Group Status")]
     GetGroupStatus,
+    #[error("group is not viable")]
     GroupViable,
+    #[error("vfio API version doesn't match with VFIO_API_VERSION defined in vfio-bindings")]
     VfioApiVersion,
+    #[error("failed to check VFIO extension")]
     VfioExtension,
+    #[error("invalid VFIO type")]
     VfioInvalidType,
+    #[error("container doesn't support VfioType1V2 IOMMU driver type")]
     VfioType1V2,
+    #[error("failed to add vfio group into vfio container")]
     GroupSetContainer,
+    #[error("failed to unset vfio container")]
     UnsetContainer,
+    #[error("failed to set container's IOMMU driver type as VfioType1V2")]
     ContainerSetIOMMU,
+    #[error("failed to get vfio device fd")]
     GroupGetDeviceFD,
-    SetDeviceAttr(SysError),
+    #[error("failed to set vfio device's attribute: {0}")]
+    SetDeviceAttr(#[source] SysError),
+    #[error("failed to get vfio device's info or info doesn't match")]
     VfioDeviceGetInfo,
-    VfioDeviceGetRegionInfo(SysError),
+    #[error("failed to get vfio device's region info: {0}")]
+    VfioDeviceGetRegionInfo(#[source] SysError),
+    #[error("invalid file path")]
     InvalidPath,
+    #[error("failed to add guest memory map into iommu table")]
     IommuDmaMap,
+    #[error("failed to remove guest memory map from iommu table")]
     IommuDmaUnmap,
+    #[error("failed to get vfio device irq info")]
     VfioDeviceGetIrqInfo,
+    #[error("failed to set vfio device irq")]
     VfioDeviceSetIrq,
 }
 
 /// Specialized version of `Result` for VFIO subsystem.
 pub type Result<T> = std::result::Result<T, VfioError>;
-
-impl fmt::Display for VfioError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            VfioError::OpenContainer(e) => {
-                write!(f, "failed to open /dev/vfio/vfio container: {}", e)
-            }
-            VfioError::OpenGroup(e, ref p) => {
-                write!(f, "failed to open /dev/vfio/{} group: {}", p, e)
-            }
-            VfioError::GetGroupStatus => write!(f, "failed to get Group Status"),
-            VfioError::GroupViable => write!(f, "group is inviable"),
-            VfioError::VfioApiVersion => write!(
-                f,
-                "vfio API version doesn't match with VFIO_API_VERSION defined in vfio-bindings"
-            ),
-            VfioError::VfioExtension => write!(f, "failed to check VFIO extension"),
-            VfioError::VfioInvalidType => write!(f, "invalid VFIO type"),
-            VfioError::VfioType1V2 => {
-                write!(f, "container dones't support VfioType1V2 IOMMU driver type")
-            }
-            VfioError::GroupSetContainer => {
-                write!(f, "failed to add vfio group into vfio container")
-            }
-            VfioError::UnsetContainer => write!(f, "failed to unset vfio container"),
-            VfioError::ContainerSetIOMMU => write!(
-                f,
-                "failed to set container's IOMMU driver type as VfioType1V2"
-            ),
-            VfioError::GroupGetDeviceFD => write!(f, "failed to get vfio device fd"),
-            VfioError::SetDeviceAttr(e) => {
-                write!(f, "failed to set vfio device's attribute: {}", e)
-            }
-            VfioError::VfioDeviceGetInfo => {
-                write!(f, "failed to get vfio device's info or info doesn't match")
-            }
-            VfioError::VfioDeviceGetRegionInfo(e) => {
-                write!(f, "failed to get vfio device's region info: {}", e)
-            }
-            VfioError::InvalidPath => write!(f, "invalid file path"),
-            VfioError::IommuDmaMap => write!(f, "failed to add guest memory map into iommu table"),
-            VfioError::IommuDmaUnmap => {
-                write!(f, "failed to remove guest memory map from iommu table")
-            }
-            VfioError::VfioDeviceGetIrqInfo => write!(f, "failed to get vfio device irq info"),
-            VfioError::VfioDeviceSetIrq => write!(f, "failed to set vfio device irq"),
-        }
-    }
-}
-
-impl std::error::Error for VfioError {
-    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
-        match self {
-            VfioError::OpenContainer(e) => Some(e),
-            VfioError::OpenGroup(e, ref _p) => Some(e),
-            VfioError::GetGroupStatus => None,
-            VfioError::GroupViable => None,
-            VfioError::VfioApiVersion => None,
-            VfioError::VfioExtension => None,
-            VfioError::VfioInvalidType => None,
-            VfioError::VfioType1V2 => None,
-            VfioError::GroupSetContainer => None,
-            VfioError::UnsetContainer => None,
-            VfioError::ContainerSetIOMMU => None,
-            VfioError::GroupGetDeviceFD => None,
-            VfioError::SetDeviceAttr(e) => Some(e),
-            VfioError::VfioDeviceGetInfo => None,
-            VfioError::VfioDeviceGetRegionInfo(e) => Some(e),
-            VfioError::InvalidPath => None,
-            VfioError::IommuDmaMap => None,
-            VfioError::IommuDmaUnmap => None,
-            VfioError::VfioDeviceGetIrqInfo => None,
-            VfioError::VfioDeviceSetIrq => None,
-        }
-    }
-}
 
 #[cfg(test)]
 mod tests {

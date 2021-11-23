@@ -17,6 +17,7 @@ byteorder = ">=1.2.1"
 log = "0.4"
 kvm-bindings = { version = "~0", optional = true }
 kvm-ioctls = { version = "~0", optional = true }
+thiserror = ">=1.0"
 vfio-bindings = "~0"
 vm-memory = { version = ">=0.6", features = ["backend-mmap"] }
 vmm-sys-util = ">=0.8.0"
