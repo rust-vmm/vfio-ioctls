@@ -500,7 +500,7 @@ pub enum VfioRegionInfoCap {
     Nvlink2Lnkspd(VfioRegionInfoCapNvlink2Lnkspd),
 }
 
-/// Information abour VFIO MMIO region.
+/// Information about VFIO MMIO region.
 #[derive(Clone, Debug)]
 pub struct VfioRegion {
     pub(crate) flags: u32,
@@ -509,7 +509,7 @@ pub struct VfioRegion {
     pub(crate) caps: Vec<VfioRegionInfoCap>,
 }
 
-/// Information abour VFIO interrupts.
+/// Information about VFIO interrupts.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct VfioIrq {
     /// Flags for irq.
@@ -716,7 +716,7 @@ impl AsRawFd for VfioDeviceInfo {
     }
 }
 
-/// Vfio device to access underlying hardware devices.
+/// A safe wrapper over a Vfio device to access underlying hardware device.
 ///
 /// The VFIO device API includes ioctls for describing the device, the I/O regions and their
 /// read/write/mmap offsets on the device descriptor, as well as mechanisms for describing and
