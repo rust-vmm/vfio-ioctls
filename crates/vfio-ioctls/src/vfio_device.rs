@@ -48,9 +48,26 @@ use crate::{Result, VfioError};
 // the region plus the capabilities information array length. The kernel will
 // then fill our vfio_region_info_with_cap structure with both the region info
 // and its capabilities.
-struct vfio_region_info_with_cap {
-    region_info: vfio_region_info,
+pub struct vfio_region_info_with_cap {
+    pub region_info: vfio_region_info,
     cap_info: __IncompleteArrayField<u8>,
+}
+
+impl vfio_region_info_with_cap {
+    fn from_region_info(region_info: &vfio_region_info) -> Vec<Self> {
+        let region_info_size: u32 = mem::size_of::<vfio_region_info>() as u32;
+        let cap_len: usize = (region_info.argsz - region_info_size) as usize;
+
+        let mut region_with_cap = vec_with_array_field::<Self, u8>(cap_len);
+        region_with_cap[0].region_info.argsz = region_info.argsz;
+        region_with_cap[0].region_info.flags = 0;
+        region_with_cap[0].region_info.index = region_info.index;
+        region_with_cap[0].region_info.cap_offset = 0;
+        region_with_cap[0].region_info.size = 0;
+        region_with_cap[0].region_info.offset = 0;
+
+        region_with_cap
+    }
 }
 
 /// A safe wrapper over a VFIO container object.
@@ -406,12 +423,7 @@ impl VfioGroup {
             return Err(VfioError::VfioDeviceGetInfo);
         }
 
-        Ok(VfioDeviceInfo {
-            device,
-            flags: dev_info.flags,
-            num_regions: dev_info.num_regions,
-            num_irqs: dev_info.num_irqs,
-        })
+        Ok(VfioDeviceInfo::new(device, &dev_info))
     }
 }
 
@@ -503,6 +515,15 @@ struct VfioDeviceInfo {
 }
 
 impl VfioDeviceInfo {
+    fn new(device: File, dev_info: &vfio_device_info) -> Self {
+        VfioDeviceInfo {
+            device,
+            flags: dev_info.flags,
+            num_regions: dev_info.num_regions,
+            num_irqs: dev_info.num_irqs,
+        }
+    }
+
     fn get_irqs(&self) -> Result<HashMap<u32, VfioIrq>> {
         let mut irqs: HashMap<u32, VfioIrq> = HashMap::new();
 
@@ -532,7 +553,6 @@ impl VfioDeviceInfo {
             debug!("\tflag 0x{:x}", irq.flags);
             debug!("\tindex {}", irq.index);
             debug!("\tcount {}", irq.count);
-
             irqs.insert(index, irq);
         }
 
@@ -549,22 +569,13 @@ impl VfioDeviceInfo {
         if region_info.flags & VFIO_REGION_INFO_FLAG_CAPS == 0
             || region_info.argsz <= region_info_size
         {
-            // There is not capabilities information for that region, we can
-            // just return.
+            // There is not capabilities information for that region, we can just return.
             return Ok(());
         }
 
         // There is a capability information for that region, we have to call
-        // VFIO_DEVICE_GET_REGION_INFO with a vfio_region_with_cap structure
-        // and the hinted size.
-        let cap_len: usize = (region_info.argsz - region_info_size) as usize;
-        let mut region_with_cap = vec_with_array_field::<vfio_region_info_with_cap, u8>(cap_len);
-        region_with_cap[0].region_info.argsz = region_info.argsz;
-        region_with_cap[0].region_info.flags = 0;
-        region_with_cap[0].region_info.index = region_info.index;
-        region_with_cap[0].region_info.cap_offset = 0;
-        region_with_cap[0].region_info.size = 0;
-        region_with_cap[0].region_info.offset = 0;
+        // VFIO_DEVICE_GET_REGION_INFO with a vfio_region_with_cap structure and the hinted size.
+        let mut region_with_cap = vfio_region_info_with_cap::from_region_info(region_info);
         // Safe as we are the owner of dev and region_info which are valid value,
         // and we verify the return value.
         let ret = unsafe {
@@ -578,13 +589,14 @@ impl VfioDeviceInfo {
             return Err(VfioError::VfioDeviceGetRegionInfo(SysError::new(ret)));
         }
 
-        // region_with_cap[0] may contain different types of structure
-        // depending on the capability type, but all of them begin with
-        // vfio_info_cap_header in order to identify the capability type,
-        // version and if there's another capability after this one.
-        // It is safe to convert region_with_cap[0] with an offset of
-        // cap_offset into vfio_info_cap_header pointer and access its
-        // elements, as long as cap_offset is greater than region_info_size.
+        // region_with_cap[0] may contain different types of structure depending on the capability
+        // type, but all of them begin with vfio_info_cap_header in order to identify the capability
+        // type, version and if there's another capability after this one.
+        // It is safe to convert region_with_cap[0] with an offset of cap_offset into
+        // vfio_info_cap_header pointer and access its elements, as long as cap_offset is greater
+        // than region_info_size.
+        //
+        // Safety: following code is safe because we trust data returned by the kernel.
         if region_with_cap[0].region_info.cap_offset >= region_info_size {
             let mut next_cap_offset = region_with_cap[0].region_info.cap_offset;
             let info_ptr = &region_with_cap[0] as *const vfio_region_info_with_cap as *const u8;
@@ -688,7 +700,6 @@ impl VfioDeviceInfo {
                 offset: reg_info.offset,
                 caps: Vec::new(),
             };
-
             if let Err(e) = self.get_region_map(&mut region, &reg_info) {
                 error!("Could not get region #{} map {}", i, e);
                 continue;
@@ -698,7 +709,6 @@ impl VfioDeviceInfo {
             debug!("\tflag 0x{:x}", region.flags);
             debug!("\tsize 0x{:x}", region.size);
             debug!("\toffset 0x{:x}", region.offset);
-
             regions.push(region);
         }
 
@@ -706,7 +716,7 @@ impl VfioDeviceInfo {
     }
 }
 
-/// Vfio device to access underline hardware devices.
+/// Vfio device to access underlying hardware devices.
 ///
 /// The VFIO device API includes ioctls for describing the device, the I/O regions and their
 /// read/write/mmap offsets on the device descriptor, as well as mechanisms for describing and
@@ -721,20 +731,22 @@ pub struct VfioDevice {
 }
 
 impl VfioDevice {
+    fn get_group_id_from_path(sysfspath: &Path) -> Result<u32> {
+        let uuid_path: PathBuf = [sysfspath, Path::new("iommu_group")].iter().collect();
+        let group_path = uuid_path.read_link().map_err(|_| VfioError::InvalidPath)?;
+        let group_osstr = group_path.file_name().ok_or(VfioError::InvalidPath)?;
+        let group_str = group_osstr.to_str().ok_or(VfioError::InvalidPath)?;
+
+        group_str.parse::<u32>().map_err(|_| VfioError::InvalidPath)
+    }
+
     /// Create a new vfio device, then guest read/write on this device could be transferred into kernel vfio.
     ///
     /// # Parameters
     /// * `sysfspath`: specify the vfio device path in sys file system.
     /// * `container`: the new VFIO device object will bind to this container object.
     pub fn new(sysfspath: &Path, container: Arc<VfioContainer>) -> Result<Self> {
-        let uuid_path: PathBuf = [sysfspath, Path::new("iommu_group")].iter().collect();
-        let group_path = uuid_path.read_link().map_err(|_| VfioError::InvalidPath)?;
-        let group_osstr = group_path.file_name().ok_or(VfioError::InvalidPath)?;
-        let group_str = group_osstr.to_str().ok_or(VfioError::InvalidPath)?;
-        let group_id = group_str
-            .parse::<u32>()
-            .map_err(|_| VfioError::InvalidPath)?;
-
+        let group_id = Self::get_group_id_from_path(sysfspath)?;
         let group = container.get_group(group_id)?;
         let device_info = group.get_device(sysfspath)?;
         let regions = device_info.get_regions()?;
