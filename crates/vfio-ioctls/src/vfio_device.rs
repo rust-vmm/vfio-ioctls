@@ -791,7 +791,7 @@ impl VfioDevice {
             .irqs
             .get(&irq_index)
             .ok_or(VfioError::VfioDeviceSetIrq)?;
-        if irq.count < vector {
+        if irq.count <= vector {
             return Err(VfioError::VfioDeviceSetIrq);
         }
 
