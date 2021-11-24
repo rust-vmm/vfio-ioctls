@@ -1070,6 +1070,10 @@ impl AsRawFd for VfioDevice {
 
 impl Drop for VfioDevice {
     fn drop(&mut self) {
+        // Safe because we own the File object.
+        // ManuallyDrop is needed here because we need to ensure that VfioDevice::device is closed
+        // before dropping VfioDevice::group, otherwise it will cause EBUSY when putting the
+        // group object.
         unsafe {
             ManuallyDrop::drop(&mut self.device);
         }
@@ -1080,6 +1084,7 @@ impl Drop for VfioDevice {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::mem::size_of;
     use vmm_sys_util::tempfile::TempFile;
 
     impl VfioGroup {
@@ -1097,5 +1102,251 @@ mod tests {
         pub(crate) fn get_group_id_from_path(_sysfspath: &Path) -> Result<u32> {
             Ok(3)
         }
+    }
+
+    #[test]
+    fn test_vfio_region_info_with_cap() {
+        let reg = vfio_region_info {
+            argsz: 129,
+            flags: 0,
+            index: 5,
+            cap_offset: 0,
+            size: 0,
+            offset: 0,
+        };
+        let cap = vfio_region_info_with_cap::from_region_info(&reg);
+
+        assert_eq!(size_of::<vfio_region_info>(), 32);
+        assert_eq!(cap.len(), 5);
+        assert_eq!(cap[0].region_info.argsz, 129);
+        assert_eq!(cap[0].region_info.index, 5);
+
+        let reg = vfio_region_info_with_cap::default();
+        assert_eq!(reg.region_info.index, 0);
+        assert_eq!(reg.region_info.argsz, 0);
+    }
+
+    #[test]
+    fn test_vfio_device_info() {
+        let tmp_file = TempFile::new().unwrap();
+        let device = File::open(tmp_file.as_path()).unwrap();
+        let dev_info = vfio_syscall::create_dev_info_for_test();
+        let device_info = VfioDeviceInfo::new(device, &dev_info);
+
+        let irqs = device_info.get_irqs().unwrap();
+        assert_eq!(irqs.len(), 3);
+        let irq = irqs.get(&0).unwrap();
+        assert_eq!(irq.flags, VFIO_IRQ_INFO_MASKABLE);
+        assert_eq!(irq.count, 1);
+        assert_eq!(irq.index, 0);
+        let irq = irqs.get(&1).unwrap();
+        assert_eq!(irq.flags, VFIO_IRQ_INFO_EVENTFD);
+        assert_eq!(irq.count, 32);
+        assert_eq!(irq.index, 1);
+        let irq = irqs.get(&2).unwrap();
+        assert_eq!(irq.flags, VFIO_IRQ_INFO_EVENTFD);
+        assert_eq!(irq.count, 2048);
+        assert_eq!(irq.index, 2);
+
+        let regions = device_info.get_regions().unwrap();
+        assert_eq!(regions.len(), 2);
+        assert_eq!(regions[0].flags, 0);
+        assert_eq!(regions[0].offset, 0x10000);
+        assert_eq!(regions[0].size, 0x1000);
+        assert_eq!(regions[0].caps.len(), 0);
+
+        assert_eq!(regions[1].flags, VFIO_REGION_INFO_FLAG_CAPS);
+        assert_eq!(regions[1].offset, 0x20000);
+        assert_eq!(regions[1].size, 0x2000);
+        assert_eq!(regions[1].caps.len(), 3);
+        assert_eq!(regions[1].caps[0], VfioRegionInfoCap::MsixMappable);
+
+        let ty = &regions[1].caps[1];
+        if let VfioRegionInfoCap::Type(t) = ty {
+            assert_eq!(t.type_, 0x5);
+            assert_eq!(t.subtype, 0x6);
+        } else {
+            panic!("expect VfioRegionInfoCapType");
+        }
+
+        let mmap = &regions[1].caps[2];
+        if let VfioRegionInfoCap::SparseMmap(m) = mmap {
+            assert_eq!(m.areas.len(), 1);
+            assert_eq!(m.areas[0].size, 0x3);
+            assert_eq!(m.areas[0].offset, 0x4);
+        } else {
+            panic!("expect VfioRegionInfoCapType");
+        }
+    }
+
+    fn create_vfio_container() -> VfioContainer {
+        let tmp_file = TempFile::new().unwrap();
+        let container = File::open(tmp_file.as_path()).unwrap();
+
+        VfioContainer {
+            container,
+            device_fd: (),
+            groups: Mutex::new(HashMap::new()),
+        }
+    }
+
+    #[test]
+    fn test_vfio_container() {
+        let container = create_vfio_container();
+
+        assert!(container.as_raw_fd() > 0);
+        container.check_api_version().unwrap();
+        container.check_extension(VFIO_TYPE1v2_IOMMU).unwrap();
+
+        let group = VfioGroup::new(1).unwrap();
+        container.device_add_group(&group).unwrap();
+        container.device_del_group(&group).unwrap();
+
+        let group = container.get_group(3).unwrap();
+        assert_eq!(Arc::strong_count(&group), 2);
+        assert_eq!(container.groups.lock().unwrap().len(), 1);
+        let group2 = container.get_group(4).unwrap();
+        assert_eq!(Arc::strong_count(&group2), 2);
+        assert_eq!(container.groups.lock().unwrap().len(), 2);
+
+        let group3 = container.get_group(3).unwrap();
+        assert_eq!(Arc::strong_count(&group), 3);
+        let group4 = container.get_group(3).unwrap();
+        assert_eq!(Arc::strong_count(&group), 4);
+        container.put_group(group4);
+        assert_eq!(Arc::strong_count(&group), 3);
+        container.put_group(group3);
+        assert_eq!(Arc::strong_count(&group), 1);
+
+        container.vfio_dma_map(0x1000, 0x1000, 0x8000).unwrap();
+        container.vfio_dma_map(0x2000, 0x2000, 0x8000).unwrap_err();
+        container.vfio_dma_unmap(0x1000, 0x1000).unwrap();
+        container.vfio_dma_unmap(0x2000, 0x2000).unwrap_err();
+    }
+
+    #[test]
+    fn test_vfio_group() {
+        let group = VfioGroup::new(1).unwrap();
+        let tmp_file = TempFile::new().unwrap();
+
+        assert_eq!(group.id, 1);
+        assert!(group.as_raw_fd() >= 0);
+        let device = group.get_device(tmp_file.as_path()).unwrap();
+        assert_eq!(device.num_irqs, 3);
+        assert_eq!(device.num_regions, 8);
+
+        let regions = device.get_regions().unwrap();
+        assert_eq!(regions.len(), 7)
+    }
+
+    #[test]
+    fn test_vfio_device() {
+        let tmp_file = TempFile::new().unwrap();
+        let container = Arc::new(create_vfio_container());
+        let device = VfioDevice::new(tmp_file.as_path(), container.clone()).unwrap();
+
+        assert!(device.as_raw_fd() > 0);
+        assert_eq!(device.max_interrupts(), 2048);
+
+        device.reset();
+        assert_eq!(device.regions.len(), 7);
+        assert_eq!(device.irqs.len(), 3);
+
+        assert!(device.get_irq_info(3).is_none());
+        let irq = device.get_irq_info(2).unwrap();
+        assert_eq!(irq.count, 2048);
+
+        device.trigger_irq(3, 0).unwrap_err();
+        device.trigger_irq(2, 2048).unwrap_err();
+        device.trigger_irq(2, 2047).unwrap();
+        device.trigger_irq(2, 0).unwrap();
+
+        device.enable_irq(3, Vec::new()).unwrap_err();
+        device.enable_irq(0, Vec::new()).unwrap_err();
+        device.enable_irq(1, Vec::new()).unwrap();
+
+        device.disable_irq(3).unwrap_err();
+        device.disable_irq(0).unwrap_err();
+        device.disable_irq(1).unwrap();
+
+        device.unmask_irq(3).unwrap_err();
+        device.unmask_irq(1).unwrap_err();
+        device.unmask_irq(0).unwrap();
+
+        device.enable_msi(Vec::new()).unwrap();
+        device.disable_msi().unwrap();
+        device.enable_msix(Vec::new()).unwrap();
+        device.disable_msix().unwrap();
+
+        assert_eq!(device.get_region_flags(1), VFIO_REGION_INFO_FLAG_CAPS);
+        assert_eq!(device.get_region_flags(7), 0);
+        assert_eq!(device.get_region_offset(1), 0x20000);
+        assert_eq!(device.get_region_offset(7), 0);
+        assert_eq!(device.get_region_size(1), 0x2000);
+        assert_eq!(device.get_region_size(7), 0);
+        assert_eq!(device.get_region_caps(1).len(), 3);
+        assert_eq!(device.get_region_caps(7).len(), 0);
+
+        let mut buf = [0u8; 16];
+        device.region_read(7, &mut buf, 0x30000);
+        device.region_read(1, &mut buf, 0x30000);
+        device.region_write(7, &buf, 0x30000);
+        device.region_write(1, &buf, 0x30000);
+
+        device.reset();
+
+        drop(device);
+        assert_eq!(container.groups.lock().unwrap().len(), 0);
+    }
+
+    #[test]
+    #[allow(clippy::redundant_clone)]
+    fn test_vfio_region_info_cap() {
+        let v1 = VfioRegionInfoCap::Type(VfioRegionInfoCapType {
+            type_: 1,
+            subtype: 1,
+        });
+        let v2 = VfioRegionInfoCap::Type(VfioRegionInfoCapType {
+            type_: 1,
+            subtype: 2,
+        });
+
+        assert_eq!(v1, v1.clone());
+        assert_ne!(v1, v2);
+
+        let v3 = VfioRegionInfoCap::SparseMmap(VfioRegionInfoCapSparseMmap {
+            areas: vec![VfioRegionSparseMmapArea { offset: 3, size: 4 }],
+        });
+        let v4 = VfioRegionInfoCap::SparseMmap(VfioRegionInfoCapSparseMmap {
+            areas: vec![VfioRegionSparseMmapArea { offset: 5, size: 6 }],
+        });
+        assert_eq!(v3, v3.clone());
+        assert_ne!(v3, v4);
+        assert_ne!(v1, v4);
+        assert_ne!(v1.clone(), v4);
+
+        let v5 = VfioRegionInfoCap::MsixMappable;
+        assert_eq!(v5, v5.clone());
+        assert_ne!(v5, v1);
+        assert_ne!(v5, v3);
+        assert_ne!(v5, v2.clone());
+        assert_ne!(v5, v4.clone());
+
+        let v6 = VfioRegionInfoCap::Nvlink2Lnkspd(VfioRegionInfoCapNvlink2Lnkspd { link_speed: 7 });
+        let v7 = VfioRegionInfoCap::Nvlink2Lnkspd(VfioRegionInfoCapNvlink2Lnkspd { link_speed: 8 });
+        assert_eq!(v6, v6.clone());
+        assert_ne!(v6, v7);
+        assert_ne!(v6, v1);
+        assert_ne!(v6, v2.clone());
+        assert_ne!(v6, v4.clone());
+
+        let v8 = VfioRegionInfoCap::Nvlink2Ssatgt(VfioRegionInfoCapNvlink2Ssatgt { tgt: 9 });
+        let v9 = VfioRegionInfoCap::Nvlink2Ssatgt(VfioRegionInfoCapNvlink2Ssatgt { tgt: 10 });
+        assert_eq!(v8, v8.clone());
+        assert_ne!(v8, v9);
+        assert_ne!(v8, v1);
+        assert_ne!(v8, v2.clone());
+        assert_ne!(v8, v4.clone());
+        assert_ne!(v8, v6.clone());
     }
 }
