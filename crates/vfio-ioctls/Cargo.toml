@@ -14,6 +14,7 @@ mshv = ["mshv-ioctls", "mshv-bindings"]
 
 [dependencies]
 byteorder = ">=1.2.1"
+libc = ">=0.2.39"
 log = "0.4"
 kvm-bindings = { version = "~0", optional = true }
 kvm-ioctls = { version = "~0", optional = true }

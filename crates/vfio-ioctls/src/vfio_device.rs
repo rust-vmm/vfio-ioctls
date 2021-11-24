@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 use std::fs::{File, OpenOptions};
 use std::mem::{self, ManuallyDrop};
-use std::os::unix::io::{AsRawFd, FromRawFd, RawFd};
+use std::os::unix::io::{AsRawFd, RawFd};
 use std::os::unix::prelude::FileExt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -28,9 +28,7 @@ use mshv_bindings::{
 use mshv_ioctls::DeviceFd;
 use vfio_bindings::bindings::vfio::*;
 use vm_memory::{Address, GuestMemory, GuestMemoryRegion, MemoryRegionAddress};
-use vmm_sys_util::errno::Error as SysError;
 use vmm_sys_util::eventfd::EventFd;
-use vmm_sys_util::ioctl::*;
 
 use crate::fam::vec_with_array_field;
 use crate::vfio_ioctls::*;
@@ -110,8 +108,7 @@ impl VfioContainer {
     }
 
     fn check_api_version(&self) -> Result<()> {
-        // Safe as file is vfio container fd and ioctl is defined by kernel.
-        let version = unsafe { ioctl(self, VFIO_GET_API_VERSION()) };
+        let version = vfio_syscall::check_api_version(self);
         if version as u32 != VFIO_API_VERSION {
             return Err(VfioError::VfioApiVersion);
         }
@@ -123,8 +120,7 @@ impl VfioContainer {
             return Err(VfioError::VfioInvalidType);
         }
 
-        // Safe as file is vfio container and make sure val is valid.
-        let ret = unsafe { ioctl_with_val(self, VFIO_CHECK_EXTENSION(), val.into()) };
+        let ret = vfio_syscall::check_extension(self, val)?;
         if ret != 1 {
             return Err(VfioError::VfioExtension);
         }
@@ -137,13 +133,7 @@ impl VfioContainer {
             return Err(VfioError::VfioInvalidType);
         }
 
-        // Safe as file is vfio container and make sure val is valid.
-        let ret = unsafe { ioctl_with_val(self, VFIO_SET_IOMMU(), val.into()) };
-        if ret < 0 {
-            return Err(VfioError::ContainerSetIOMMU);
-        }
-
-        Ok(())
+        vfio_syscall::set_iommu(self, val)
     }
 
     fn device_add_group(&self, group: &VfioGroup) -> Result<()> {
@@ -203,28 +193,19 @@ impl VfioContainer {
         let group = Arc::new(VfioGroup::new(group_id)?);
 
         // Bind the new group object to the container.
-        // Safe as we are the owner of group and container_raw_fd which are valid value,
-        // and we verify the ret value
-        let container_raw_fd = self.as_raw_fd();
-        let ret = unsafe { ioctl_with_ref(&*group, VFIO_GROUP_SET_CONTAINER(), &container_raw_fd) };
-        if ret < 0 {
-            return Err(VfioError::GroupSetContainer);
-        }
+        vfio_syscall::set_group_container(&*group, self)?;
 
         // Initialize the IOMMU backend driver after binding the first group object.
         if hash.len() == 0 {
             if let Err(e) = self.set_iommu(VFIO_TYPE1v2_IOMMU) {
-                let _ = unsafe {
-                    ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd())
-                };
+                let _ = vfio_syscall::unset_group_container(&*group, self);
                 return Err(e);
             }
         }
 
         // Add the new group object to the hypervisor driver.
         if let Err(e) = self.device_add_group(&group) {
-            let _ =
-                unsafe { ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd()) };
+            let _ = vfio_syscall::unset_group_container(&*group, self);
             return Err(e);
         }
 
@@ -250,10 +231,7 @@ impl VfioContainer {
                     return;
                 }
             }
-            // Safe as we are the owner of self and container_raw_fd which are valid value.
-            let ret =
-                unsafe { ioctl_with_ref(&*group, VFIO_GROUP_UNSET_CONTAINER(), &self.as_raw_fd()) };
-            if ret < 0 {
+            if vfio_syscall::unset_group_container(&*group, self).is_err() {
                 error!("Could not unbind VFIO group: {:?}", group.id());
                 return;
             }
@@ -276,14 +254,7 @@ impl VfioContainer {
             size,
         };
 
-        // Safe as file is vfio container, dma_map is constructed by us, and
-        // we check the return value
-        let ret = unsafe { ioctl_with_ref(self, VFIO_IOMMU_MAP_DMA(), &dma_map) };
-        if ret != 0 {
-            return Err(VfioError::IommuDmaMap);
-        }
-
-        Ok(())
+        vfio_syscall::map_dma(self, &dma_map)
     }
 
     /// Unmap a region of guest memory regions into the vfio container's iommu table.
@@ -299,10 +270,8 @@ impl VfioContainer {
             size,
         };
 
-        // Safe as file is vfio container, dma_unmap is constructed by us, and
-        // we check the return value
-        let ret = unsafe { ioctl_with_mut_ref(self, VFIO_IOMMU_UNMAP_DMA(), &mut dma_unmap) };
-        if ret != 0 || dma_unmap.size != size {
+        vfio_syscall::unmap_dma(self, &mut dma_unmap)?;
+        if dma_unmap.size != size {
             return Err(VfioError::IommuDmaUnmap);
         }
 
@@ -374,12 +343,7 @@ impl VfioGroup {
             argsz: mem::size_of::<vfio_group_status>() as u32,
             flags: 0,
         };
-        // Safe as we are the owner of group and group_status which are valid value.
-        let ret = unsafe { ioctl_with_mut_ref(&group, VFIO_GROUP_GET_STATUS(), &mut group_status) };
-        if ret < 0 {
-            return Err(VfioError::GetGroupStatus);
-        }
-
+        vfio_syscall::get_group_status(&group, &mut group_status)?;
         if group_status.flags != VFIO_GROUP_FLAGS_VIABLE {
             return Err(VfioError::GroupViable);
         }
@@ -395,16 +359,7 @@ impl VfioGroup {
         let uuid_osstr = name.file_name().ok_or(VfioError::InvalidPath)?;
         let uuid_str = uuid_osstr.to_str().ok_or(VfioError::InvalidPath)?;
         let path: CString = CString::new(uuid_str.as_bytes()).expect("CString::new() failed");
-        let path_ptr = path.as_ptr();
-
-        // Safe as we are the owner of self and path_ptr which are valid value.
-        let fd = unsafe { ioctl_with_ptr(self, VFIO_GROUP_GET_DEVICE_FD(), path_ptr) };
-        if fd < 0 {
-            return Err(VfioError::GroupGetDeviceFD);
-        }
-
-        // Safe as fd is valid FD
-        let device = unsafe { File::from_raw_fd(fd) };
+        let device = vfio_syscall::get_group_device_fd(self, &path)?;
 
         let mut dev_info = vfio_device_info {
             argsz: mem::size_of::<vfio_device_info>() as u32,
@@ -412,11 +367,8 @@ impl VfioGroup {
             num_regions: 0,
             num_irqs: 0,
         };
-        // Safe as we are the owner of dev and dev_info which are valid value,
-        // and we verify the return value.
-        let ret = unsafe { ioctl_with_mut_ref(&device, VFIO_DEVICE_GET_INFO(), &mut dev_info) };
-        if ret < 0
-            || (dev_info.flags & VFIO_DEVICE_FLAGS_PCI) == 0
+        vfio_syscall::get_device_info(&device, &mut dev_info)?;
+        if (dev_info.flags & VFIO_DEVICE_FLAGS_PCI) == 0
             || dev_info.num_regions < VFIO_PCI_CONFIG_REGION_INDEX + 1
             || dev_info.num_irqs < VFIO_PCI_MSIX_IRQ_INDEX + 1
         {
@@ -507,7 +459,7 @@ pub struct VfioIrq {
     pub count: u32,
 }
 
-struct VfioDeviceInfo {
+pub(crate) struct VfioDeviceInfo {
     device: File,
     flags: u32,
     num_regions: u32,
@@ -535,10 +487,7 @@ impl VfioDeviceInfo {
                 count: 0,
             };
 
-            let ret = unsafe {
-                ioctl_with_mut_ref(&self.device, VFIO_DEVICE_GET_IRQ_INFO(), &mut irq_info)
-            };
-            if ret < 0 {
+            if vfio_syscall::get_device_irq_info(self, &mut irq_info).is_err() {
                 warn!("Could not get VFIO IRQ info for index {:}", index);
                 continue;
             }
@@ -576,18 +525,7 @@ impl VfioDeviceInfo {
         // There is a capability information for that region, we have to call
         // VFIO_DEVICE_GET_REGION_INFO with a vfio_region_with_cap structure and the hinted size.
         let mut region_with_cap = vfio_region_info_with_cap::from_region_info(region_info);
-        // Safe as we are the owner of dev and region_info which are valid value,
-        // and we verify the return value.
-        let ret = unsafe {
-            ioctl_with_mut_ref(
-                &self.device,
-                VFIO_DEVICE_GET_REGION_INFO(),
-                &mut (region_with_cap[0].region_info),
-            )
-        };
-        if ret < 0 {
-            return Err(VfioError::VfioDeviceGetRegionInfo(SysError::new(ret)));
-        }
+        vfio_syscall::get_device_region_info_cap(self, &mut region_with_cap)?;
 
         // region_with_cap[0] may contain different types of structure depending on the capability
         // type, but all of them begin with vfio_info_cap_header in order to identify the capability
@@ -675,7 +613,6 @@ impl VfioDeviceInfo {
 
         for i in VFIO_PCI_BAR0_REGION_INDEX..self.num_regions {
             let argsz: u32 = mem::size_of::<vfio_region_info>() as u32;
-
             let mut reg_info = vfio_region_info {
                 argsz,
                 flags: 0,
@@ -684,12 +621,8 @@ impl VfioDeviceInfo {
                 size: 0,
                 offset: 0,
             };
-            // Safe as we are the owner of dev and reg_info which are valid value,
-            // and we verify the return value.
-            let ret = unsafe {
-                ioctl_with_mut_ref(&self.device, VFIO_DEVICE_GET_REGION_INFO(), &mut reg_info)
-            };
-            if ret < 0 {
+
+            if vfio_syscall::get_device_region_info(self, &mut reg_info).is_err() {
                 error!("Could not get region #{} info", i);
                 continue;
             }
@@ -713,6 +646,12 @@ impl VfioDeviceInfo {
         }
 
         Ok(regions)
+    }
+}
+
+impl AsRawFd for VfioDeviceInfo {
+    fn as_raw_fd(&self) -> RawFd {
+        self.device.as_raw_fd()
     }
 }
 
@@ -765,7 +704,7 @@ impl VfioDevice {
     /// VFIO device reset only if the device supports being reset.
     pub fn reset(&self) {
         if self.flags & VFIO_DEVICE_FLAGS_RESET != 0 {
-            unsafe { ioctl(self, VFIO_DEVICE_RESET()) };
+            vfio_syscall::reset(self);
         }
     }
 
@@ -795,22 +734,14 @@ impl VfioDevice {
             return Err(VfioError::VfioDeviceSetIrq);
         }
 
-        let irq_set = vfio_irq_set {
-            argsz: mem::size_of::<vfio_irq_set>() as u32,
-            flags: VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_TRIGGER,
-            index: irq_index,
-            start: vector,
-            count: 1,
-            ..Default::default()
-        };
+        let mut irq_set = vec_with_array_field::<vfio_irq_set, u32>(0);
+        irq_set[0].argsz = mem::size_of::<vfio_irq_set>() as u32;
+        irq_set[0].flags = VFIO_IRQ_SET_DATA_NONE | VFIO_IRQ_SET_ACTION_TRIGGER;
+        irq_set[0].index = irq_index;
+        irq_set[0].start = vector;
+        irq_set[0].count = 1;
 
-        // Safe as we are the owner of self and irq_set which are valid value
-        let ret = unsafe { ioctl_with_ref(self, VFIO_DEVICE_SET_IRQS(), &irq_set) };
-        if ret < 0 {
-            return Err(VfioError::VfioDeviceSetIrq);
-        }
-
-        Ok(())
+        vfio_syscall::set_device_irqs(self, irq_set.as_slice())
     }
 
     /// Enables a VFIO device IRQs.
@@ -856,13 +787,7 @@ impl VfioDevice {
             }
         }
 
-        // Safe as we are the owner of self and irq_set which are valid value
-        let ret = unsafe { ioctl_with_ref(self, VFIO_DEVICE_SET_IRQS(), &irq_set[0]) };
-        if ret < 0 {
-            return Err(VfioError::VfioDeviceSetIrq);
-        }
-
-        Ok(())
+        vfio_syscall::set_device_irqs(self, irq_set.as_slice())
     }
 
     /// Disables a VFIO device IRQs
@@ -874,6 +799,7 @@ impl VfioDevice {
             .irqs
             .get(&irq_index)
             .ok_or(VfioError::VfioDeviceSetIrq)?;
+        // Currently the VFIO driver only support MASK/UNMASK INTX, so count is hard-coded to 1.
         if irq.count == 0 {
             return Err(VfioError::VfioDeviceSetIrq);
         }
@@ -887,13 +813,7 @@ impl VfioDevice {
         irq_set[0].start = 0;
         irq_set[0].count = 0;
 
-        // Safe as we are the owner of self and irq_set which are valid value
-        let ret = unsafe { ioctl_with_ref(self, VFIO_DEVICE_SET_IRQS(), &irq_set[0]) };
-        if ret < 0 {
-            return Err(VfioError::VfioDeviceSetIrq);
-        }
-
-        Ok(())
+        vfio_syscall::set_device_irqs(self, irq_set.as_slice())
     }
 
     /// Unmask IRQ
@@ -917,13 +837,7 @@ impl VfioDevice {
         irq_set[0].start = 0;
         irq_set[0].count = 1;
 
-        // Safe as we are the owner of self and irq_set which are valid value
-        let ret = unsafe { ioctl_with_ref(self, VFIO_DEVICE_SET_IRQS(), &irq_set[0]) };
-        if ret < 0 {
-            return Err(VfioError::VfioDeviceSetIrq);
-        }
-
-        Ok(())
+        vfio_syscall::set_device_irqs(self, irq_set.as_slice())
     }
 
     /// Wrapper to enable MSI IRQs.
