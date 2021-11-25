@@ -791,9 +791,9 @@ impl VfioDevice {
         let irq = self
             .irqs
             .get(&irq_index)
-            .ok_or(VfioError::VfioDeviceSetIrq)?;
+            .ok_or(VfioError::VfioDeviceTriggerIrq)?;
         if irq.count <= vector {
-            return Err(VfioError::VfioDeviceSetIrq);
+            return Err(VfioError::VfioDeviceTriggerIrq);
         }
 
         let mut irq_set = vec_with_array_field::<vfio_irq_set, u32>(0);
@@ -804,6 +804,7 @@ impl VfioDevice {
         irq_set[0].count = 1;
 
         vfio_syscall::set_device_irqs(self, irq_set.as_slice())
+            .map_err(|_| VfioError::VfioDeviceTriggerIrq)
     }
 
     /// Enables a VFIO device IRQs.
@@ -818,9 +819,9 @@ impl VfioDevice {
         let irq = self
             .irqs
             .get(&irq_index)
-            .ok_or(VfioError::VfioDeviceSetIrq)?;
+            .ok_or(VfioError::VfioDeviceEnableIrq)?;
         if irq.count == 0 || (irq.count as usize) < event_fds.len() {
-            return Err(VfioError::VfioDeviceSetIrq);
+            return Err(VfioError::VfioDeviceEnableIrq);
         }
 
         let mut irq_set = vec_with_array_field::<vfio_irq_set, u32>(event_fds.len());
@@ -850,6 +851,7 @@ impl VfioDevice {
         }
 
         vfio_syscall::set_device_irqs(self, irq_set.as_slice())
+            .map_err(|_| VfioError::VfioDeviceEnableIrq)
     }
 
     /// Disables a VFIO device IRQs
@@ -860,10 +862,10 @@ impl VfioDevice {
         let irq = self
             .irqs
             .get(&irq_index)
-            .ok_or(VfioError::VfioDeviceSetIrq)?;
+            .ok_or(VfioError::VfioDeviceDisableIrq)?;
         // Currently the VFIO driver only support MASK/UNMASK INTX, so count is hard-coded to 1.
         if irq.count == 0 {
-            return Err(VfioError::VfioDeviceSetIrq);
+            return Err(VfioError::VfioDeviceDisableIrq);
         }
 
         // Individual subindex interrupts can be disabled using the -1 value for DATA_EVENTFD or
@@ -876,6 +878,7 @@ impl VfioDevice {
         irq_set[0].count = 0;
 
         vfio_syscall::set_device_irqs(self, irq_set.as_slice())
+            .map_err(|_| VfioError::VfioDeviceDisableIrq)
     }
 
     /// Unmask IRQ
@@ -886,10 +889,10 @@ impl VfioDevice {
         let irq = self
             .irqs
             .get(&irq_index)
-            .ok_or(VfioError::VfioDeviceSetIrq)?;
+            .ok_or(VfioError::VfioDeviceUnmaskIrq)?;
         // Currently the VFIO driver only support MASK/UNMASK INTX, so count is hard-coded to 1.
         if irq.count == 0 || irq.count != 1 || irq.index != VFIO_PCI_INTX_IRQ_INDEX {
-            return Err(VfioError::VfioDeviceSetIrq);
+            return Err(VfioError::VfioDeviceUnmaskIrq);
         }
 
         let mut irq_set = vec_with_array_field::<vfio_irq_set, u32>(0);
@@ -900,6 +903,7 @@ impl VfioDevice {
         irq_set[0].count = 1;
 
         vfio_syscall::set_device_irqs(self, irq_set.as_slice())
+            .map_err(|_| VfioError::VfioDeviceUnmaskIrq)
     }
 
     /// Wrapper to enable MSI IRQs.
