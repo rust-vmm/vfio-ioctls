@@ -115,6 +115,14 @@ pub enum VfioError {
     VfioDeviceGetIrqInfo,
     #[error("failed to set vfio device irq")]
     VfioDeviceSetIrq,
+    #[error("failed to enable vfio device irq")]
+    VfioDeviceEnableIrq,
+    #[error("failed to disable vfio device irq")]
+    VfioDeviceDisableIrq,
+    #[error("failed to unmask vfio device irq")]
+    VfioDeviceUnmaskIrq,
+    #[error("failed to trigger vfio device irq")]
+    VfioDeviceTriggerIrq,
 }
 
 /// Specialized version of `Result` for VFIO subsystem.
