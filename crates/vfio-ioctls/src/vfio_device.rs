@@ -905,7 +905,8 @@ impl VfioDevice {
             .irqs
             .get(&irq_index)
             .ok_or(VfioError::VfioDeviceSetIrq)?;
-        if irq.count == 0 {
+        // Currently the VFIO driver only support MASK/UNMASK INTX, so count is hard-coded to 1.
+        if irq.count == 0 || irq.count != 1 || irq.index != VFIO_PCI_INTX_IRQ_INDEX {
             return Err(VfioError::VfioDeviceSetIrq);
         }
 
